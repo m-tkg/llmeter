@@ -38,15 +38,41 @@ cargo install --path .
 
 ## 使い方
 
-### レポート生成
+### レポート生成（HTML）
 
 ```bash
-llmeter report                                   # 直近30日、HTML、./llmeter-report/ に出力
-llmeter report --days 7 --format md --out ./out  # 期間・形式・出力先を指定
-llmeter report --tools claude,codex              # 対象ツールを絞る
+llmeter report                         # 直近30日を ./llmeter-report/ に出力
+llmeter report --days 7                # 直近7日
+llmeter report --out ~/reports/ai      # 出力先を指定
+llmeter report --tools claude,codex    # 対象ツールを絞る（claude / codex / cursor）
 ```
 
-出力は `index.html`（Overview + セッション一覧）と `sessions/<id>.html`（詳細、一覧からリンク）。Markdown 指定時も同じ構成です。
+ブラウザで `./llmeter-report/index.html` を開くとダッシュボードが表示されます。
+
+### レポート生成（Markdown）
+
+`--format md` を付けるだけで、同じ内容を Markdown で出力します。
+
+```bash
+llmeter report --format md                     # ./llmeter-report/report.md に出力
+llmeter report --format md --out ./docs/usage  # 出力先を指定
+```
+
+### レポートの出力構成
+
+| ファイル | 内容 |
+|---|---|
+| `index.html` / `report.md` | Overview（コスト・トークン・気づき・グラフ）+ セッション一覧 |
+| `sessions/<ID>.html` / `sessions/<ID>.md` | 各セッションの詳細トランスクリプト（一覧からリンク） |
+
+`report` の全オプション:
+
+| オプション | デフォルト | 説明 |
+|---|---|---|
+| `--days <N>` | `30` | 集計対象期間（日数） |
+| `--format <html\|md>` | `html` | 出力形式 |
+| `--out <DIR>` | `./llmeter-report/` | 出力先ディレクトリ（なければ作成） |
+| `--tools <LIST>` | 全ツール | `claude,codex,cursor` のカンマ区切りで限定 |
 
 ### セッション一覧（ターミナル表示）
 
@@ -58,9 +84,11 @@ llmeter sessions --sort turns             # cost | turns | errors
 
 ### セッション詳細
 
+セッション ID は `llmeter sessions` の表示や、HTML レポートのリンク先ファイル名で確認できます。
+
 ```bash
-llmeter session <セッションID>              # Markdown で標準出力
-llmeter session <セッションID> --format html
+llmeter session <セッションID>                              # Markdown で標準出力
+llmeter session <セッションID> --format html > session.html # HTML をファイルに保存
 ```
 
 ### キャッシュ操作

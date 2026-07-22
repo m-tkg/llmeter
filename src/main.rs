@@ -13,7 +13,19 @@ use model::{Session, Tool};
 use std::path::PathBuf;
 
 #[derive(Parser)]
-#[command(name = "llmeter", about = "AI コーディングツール利用分析 CLI")]
+#[command(
+    name = "llmeter",
+    about = "AI コーディングツール（Claude Code / Codex / Cursor）の利用状況をローカルログから集計・可視化する CLI",
+    after_help = "\
+例:
+  llmeter report                          直近30日を HTML で ./llmeter-report/ に出力
+  llmeter report --format md              同じ内容を Markdown で出力
+  llmeter report --days 7 --out ./weekly  直近7日を ./weekly/ に出力
+  llmeter sessions --sort errors          ツールエラー率順にセッション一覧を表示
+  llmeter session <ID>                    セッション詳細を Markdown で標準出力
+
+詳細は各サブコマンドの --help（例: llmeter report --help）を参照。"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -21,35 +33,66 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// レポート生成(HTML/Markdown)
+    /// レポート生成。HTML（ダッシュボード）または Markdown を --out ディレクトリに書き出す
+    #[command(after_help = "\
+出力構成（HTML/Markdown 共通）:
+  <out>/index.html   (または report.md)   Overview + セッション一覧
+  <out>/sessions/<ID>.html (または .md)   各セッションの詳細（一覧からリンク）
+
+例:
+  llmeter report                                # HTML、直近30日、./llmeter-report/
+  llmeter report --format md                    # Markdown で ./llmeter-report/ に出力
+  llmeter report --format md --out ./docs/usage # Markdown を任意のディレクトリへ
+  llmeter report --days 90 --tools claude,codex # 期間90日、対象ツールを限定")]
     Report {
+        /// 集計対象期間（日数）
         #[arg(long, default_value_t = 30)]
         days: i64,
-        #[arg(long, default_value = "html")]
+        /// 出力形式
+        #[arg(long, default_value = "html", value_parser = ["html", "md"])]
         format: String,
+        /// 出力先ディレクトリ（なければ作成）
         #[arg(long, default_value = "./llmeter-report/")]
         out: PathBuf,
-        #[arg(long)]
+        /// 対象ツールをカンマ区切りで限定（claude, codex, cursor）。省略時は全ツール
+        #[arg(long, value_name = "TOOLS")]
         tools: Option<String>,
     },
-    /// セッション一覧をターミナル表示
+    /// セッション一覧をターミナルにテーブル表示
+    #[command(after_help = "\
+例:
+  llmeter sessions                     # 直近30日、コスト降順
+  llmeter sessions --repo llmeter      # リポジトリ名で絞り込み
+  llmeter sessions --sort turns        # ターン数順")]
     Sessions {
+        /// 集計対象期間（日数）
         #[arg(long, default_value_t = 30)]
         days: i64,
+        /// リポジトリ名で絞り込み（部分一致）
         #[arg(long)]
         repo: Option<String>,
-        #[arg(long, default_value = "cost")]
+        /// 並び順
+        #[arg(long, default_value = "cost", value_parser = ["cost", "turns", "errors"])]
         sort: String,
-        #[arg(long)]
+        /// 対象ツールをカンマ区切りで限定（claude, codex, cursor）。省略時は全ツール
+        #[arg(long, value_name = "TOOLS")]
         tools: Option<String>,
     },
-    /// セッション詳細トランスクリプト
+    /// セッション詳細トランスクリプトを標準出力に表示
+    #[command(after_help = "\
+セッション ID は `llmeter sessions` や HTML レポートのリンク先ファイル名で確認できる。
+
+例:
+  llmeter session 0151c9d7-7a81-4429-a1d1-e1b4d878a64e                # Markdown
+  llmeter session 0151c9d7-... --format html > session.html          # HTML を保存")]
     Session {
+        /// セッション ID（`llmeter sessions` で確認）
         id: String,
-        #[arg(long, default_value = "md")]
+        /// 出力形式
+        #[arg(long, default_value = "md", value_parser = ["md", "html"])]
         format: String,
     },
-    /// キャッシュ操作
+    /// 増分キャッシュ（~/.cache/llmeter/）の操作
     Cache {
         #[command(subcommand)]
         action: CacheAction,
@@ -58,7 +101,9 @@ enum Command {
 
 #[derive(Subcommand)]
 enum CacheAction {
+    /// キャッシュを削除する（次回実行時に全ログを再パース）
     Clear,
+    /// キャッシュの件数とサイズを表示する
     Status,
 }
 
