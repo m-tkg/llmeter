@@ -102,9 +102,27 @@ llmeter cache clear    # キャッシュ削除（次回はフルパース）
 
 ## コスト計算
 
-- モデル単価テーブルをバイナリに内蔵（`src/pricing.rs` の `embedded_defaults()`）
-- `~/.config/llmeter/pricing.toml` で単価の上書き・新モデルの追加が可能（ファイルがなくても動作）
-- 未知モデルのコストは「不明」として合計から分離表示
+料金解決は ccusage と同様、3層構造で行います。
+
+1. **pricing.toml**（ユーザー上書き、モデル名との部分一致、最優先）
+2. **LiteLLM 料金データベース**（[BerriAI/litellm](https://github.com/BerriAI/litellm) が公開する `model_prices_and_context_window.json` をキャッシュして利用。完全一致 → プロバイダ接頭辞除去後の完全一致 → 最長プレフィックス一致の順で照合）
+3. **埋め込みデフォルト**（`src/pricing.rs` の `embedded_defaults()`。ネットワーク不可・LiteLLM 未収録時の fallback）
+
+未知モデルのコストは「不明」として合計から分離表示します。
+
+### LiteLLM 料金データベース
+
+- キャッシュ先: `<OS標準キャッシュディレクトリ>/llmeter/litellm_prices.json`（macOS: `~/Library/Caches/llmeter/`）
+- TTL: 7日。`report` / `sessions` / `session` 実行時、キャッシュが TTL 切れなら自動で再取得（タイムアウト10秒）。取得に失敗した場合は古いキャッシュ、それも無ければ埋め込みデフォルトにフォールバックします（stderr に警告）
+- `--offline` フラグ（`report` / `sessions` / `session` 共通）を付けるとネットワークアクセスを一切行わず、キャッシュ + 埋め込みデフォルトのみで動作します
+- `llmeter pricing refresh` — TTL を無視して強制的に再取得
+- `llmeter pricing show <model>` — 指定モデルがどの層で解決され、単価がいくらかを表示（デバッグ用）
+
+```bash
+llmeter pricing refresh
+llmeter pricing show claude-sonnet-5-20260115
+llmeter report --days 7 --offline
+```
 
 ### 内蔵デフォルト単価（$ / 100万トークン）
 
@@ -147,7 +165,7 @@ cache_read = 0.5
 
 - 必須キー: `input` / `output`
 - 省略可: `cache_write` / `cache_read`（省略時は input からの倍率で自動計算）
-- 複数パターンにマッチする場合、ユーザー定義 → 内蔵デフォルトの順で最初のマッチを採用
+- 複数の層でマッチする場合、pricing.toml → LiteLLM → 内蔵デフォルトの順で最初のマッチを採用
 
 ## 既知の制限
 
@@ -163,7 +181,7 @@ cargo test     # 単体テスト
 cargo clippy   # lint
 ```
 
-構成: `src/sources/`（各ツールのパーサ）、`src/aggregate.rs`（集計）、`src/pricing.rs`（コスト計算）、`src/insights.rs`（気づき生成）、`src/render/`（HTML / Markdown 出力）、`src/cache.rs`（増分キャッシュ）。
+構成: `src/sources/`（各ツールのパーサ）、`src/aggregate.rs`（集計）、`src/pricing.rs`（コスト計算・3層解決）、`src/litellm.rs`（LiteLLM 料金データの取得・キャッシュ）、`src/insights.rs`（気づき生成）、`src/render/`（HTML / Markdown 出力）、`src/cache.rs`（増分キャッシュ）。
 
 ## ライセンス
 

@@ -1,6 +1,7 @@
 mod aggregate;
 mod cache;
 mod insights;
+mod litellm;
 mod model;
 mod pricing;
 mod render;
@@ -57,6 +58,9 @@ enum Command {
         /// 対象ツールをカンマ区切りで限定（claude, codex, cursor）。省略時は全ツール
         #[arg(long, value_name = "TOOLS")]
         tools: Option<String>,
+        /// ネットワークアクセスなしで実行（LiteLLM 料金データはキャッシュ+埋め込みのみ使用）
+        #[arg(long)]
+        offline: bool,
     },
     /// セッション一覧をターミナルにテーブル表示
     #[command(after_help = "\
@@ -77,6 +81,9 @@ enum Command {
         /// 対象ツールをカンマ区切りで限定（claude, codex, cursor）。省略時は全ツール
         #[arg(long, value_name = "TOOLS")]
         tools: Option<String>,
+        /// ネットワークアクセスなしで実行（LiteLLM 料金データはキャッシュ+埋め込みのみ使用）
+        #[arg(long)]
+        offline: bool,
     },
     /// セッション詳細トランスクリプトを標準出力に表示
     #[command(after_help = "\
@@ -91,11 +98,30 @@ enum Command {
         /// 出力形式
         #[arg(long, default_value = "md", value_parser = ["md", "html"])]
         format: String,
+        /// ネットワークアクセスなしで実行（LiteLLM 料金データはキャッシュ+埋め込みのみ使用）
+        #[arg(long)]
+        offline: bool,
     },
     /// 増分キャッシュの操作（macOS: ~/Library/Caches/llmeter, Linux: ~/.cache/llmeter）
     Cache {
         #[command(subcommand)]
         action: CacheAction,
+    },
+    /// LiteLLM 料金データベースの操作
+    Pricing {
+        #[command(subcommand)]
+        action: PricingAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum PricingAction {
+    /// TTL を無視して LiteLLM 料金データを強制的に再取得する
+    Refresh,
+    /// 指定モデルの解決結果（採用層・単価）を表示する
+    Show {
+        /// モデル名（ログ上の表記、例: claude-sonnet-5-20260115）
+        model: String,
     },
 }
 
@@ -152,9 +178,9 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Command::Report { days, format, out, tools } => {
+        Command::Report { days, format, out, tools, offline } => {
             let tools = parse_tools(&tools);
-            let pricing = pricing::PricingTable::load(None);
+            let pricing = pricing::PricingTable::load(None, offline);
             let mut sessions = collect_sessions(days, &tools)?;
             apply_cost(&mut sessions, &pricing);
 
@@ -187,9 +213,9 @@ fn main() -> Result<()> {
 
             println!("レポート出力: {}", out.display());
         }
-        Command::Sessions { days, repo, sort, tools } => {
+        Command::Sessions { days, repo, sort, tools, offline } => {
             let tools = parse_tools(&tools);
-            let pricing = pricing::PricingTable::load(None);
+            let pricing = pricing::PricingTable::load(None, offline);
             let mut sessions = collect_sessions(days, &tools)?;
             apply_cost(&mut sessions, &pricing);
 
@@ -199,8 +225,8 @@ fn main() -> Result<()> {
             sort_sessions(&mut sessions, &sort);
             render::print_sessions_table(&sessions);
         }
-        Command::Session { id, format } => {
-            print_session_detail(&id, &format)?;
+        Command::Session { id, format, offline } => {
+            print_session_detail(&id, &format, offline)?;
         }
         Command::Cache { action } => {
             let cache = cache::Cache::open()?;
@@ -215,6 +241,26 @@ fn main() -> Result<()> {
                 }
             }
         }
+        Command::Pricing { action } => match action {
+            PricingAction::Refresh => match litellm::refresh() {
+                Ok(count) => println!("LiteLLM 料金データを更新した（{count} モデル）"),
+                Err(e) => eprintln!("LiteLLM 料金データの更新に失敗した: {e}"),
+            },
+            PricingAction::Show { model } => {
+                let pricing = pricing::PricingTable::load(None, false);
+                match pricing.resolve(&model) {
+                    Some((source, p)) => {
+                        println!("モデル: {model}");
+                        println!("採用層: {}", source.as_str());
+                        println!("input:       {:.4} $/1M tokens", p.input);
+                        println!("output:      {:.4} $/1M tokens", p.output);
+                        println!("cache_write: {:.4} $/1M tokens", p.cache_write_rate());
+                        println!("cache_read:  {:.4} $/1M tokens", p.cache_read_rate());
+                    }
+                    None => println!("未知モデル: {model}（料金データが見つからない）"),
+                }
+            }
+        },
     }
 
     Ok(())
@@ -246,7 +292,7 @@ fn sort_sessions(sessions: &mut [Session], sort: &str) {
     }
 }
 
-fn print_session_detail(id: &str, format: &str) -> Result<()> {
+fn print_session_detail(id: &str, format: &str, offline: bool) -> Result<()> {
     let cache = cache::Cache::open()?;
 
     for source in all_sources() {
@@ -267,7 +313,7 @@ fn print_session_detail(id: &str, format: &str) -> Result<()> {
 
             if matches {
                 let mut transcript = source.parse_transcript(&path, id)?;
-                let pricing = pricing::PricingTable::load(None);
+                let pricing = pricing::PricingTable::load(None, offline);
                 apply_cost(std::slice::from_mut(&mut transcript.session), &pricing);
                 match format {
                     "html" => render::html::print_session_detail(&transcript),
