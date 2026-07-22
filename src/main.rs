@@ -92,7 +92,7 @@ enum Command {
         #[arg(long, default_value = "md", value_parser = ["md", "html"])]
         format: String,
     },
-    /// 増分キャッシュ（~/.cache/llmeter/）の操作
+    /// 増分キャッシュの操作（macOS: ~/Library/Caches/llmeter, Linux: ~/.cache/llmeter）
     Cache {
         #[command(subcommand)]
         action: CacheAction,

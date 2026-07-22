@@ -98,13 +98,56 @@ llmeter cache status   # キャッシュ状態の確認
 llmeter cache clear    # キャッシュ削除（次回はフルパース）
 ```
 
-キャッシュは `~/.cache/llmeter/` に保存され、ソースファイルの path + mtime + size をキーに無効化されます。
+キャッシュは OS 標準のキャッシュディレクトリ（macOS: `~/Library/Caches/llmeter/`、Linux: `~/.cache/llmeter/`）に保存され、ソースファイルの path + mtime + size をキーに無効化されます。
 
 ## コスト計算
 
-- モデル単価テーブルをバイナリに内蔵（Anthropic はキャッシュ書込 1.25x / キャッシュ読取 0.1x を反映）
-- `~/.config/llmeter/pricing.toml` で単価の上書き・新モデルの追加が可能
+- モデル単価テーブルをバイナリに内蔵（`src/pricing.rs` の `embedded_defaults()`）
+- `~/.config/llmeter/pricing.toml` で単価の上書き・新モデルの追加が可能（ファイルがなくても動作）
 - 未知モデルのコストは「不明」として合計から分離表示
+
+### 内蔵デフォルト単価（$ / 100万トークン）
+
+| パターン | input | output | cache_write | cache_read |
+|---|---|---|---|---|
+| `claude-opus` | 15.0 | 75.0 | input×1.25 | input×0.1 |
+| `claude-sonnet` | 3.0 | 15.0 | input×1.25 | input×0.1 |
+| `claude-haiku` | 0.8 | 4.0 | input×1.25 | input×0.1 |
+| `claude-fable` | 3.0 | 15.0 | input×1.25 | input×0.1 |
+| `gpt-5` | 5.0 | 15.0 | 5.0 | 0.5 |
+| `gpt-4.1` | 2.0 | 8.0 | 2.0 | 0.5 |
+| `gpt-4o` | 2.5 | 10.0 | 2.5 | 1.25 |
+| `o3` | 2.0 | 8.0 | input×1.25 | input×0.1 |
+| `o4-mini` | 1.1 | 4.4 | input×1.25 | input×0.1 |
+
+パターンはモデル名との**部分一致**（小文字比較）。例えば `claude-sonnet` は `claude-sonnet-5-20260115` にマッチします。単価は公式価格と異なる場合があるため、正確なコストが必要な場合は `pricing.toml` で上書きしてください。
+
+### pricing.toml の書式
+
+配置場所は `~/.config/llmeter/pricing.toml`（全 OS 共通で優先）。無い場合は OS 標準の設定ディレクトリ（macOS: `~/Library/Application Support/llmeter/pricing.toml`、Linux: `~/.config/llmeter/pricing.toml`）を読みます。
+
+```toml
+# キー = モデル名の部分一致パターン。ユーザー定義は内蔵デフォルトより優先。
+# 単価はすべて $ / 100万トークン。
+
+# 既存パターンの単価を上書き
+[models."claude-sonnet"]
+input = 3.0
+output = 15.0
+# cache_write / cache_read は省略可
+# 省略時: cache_write = input × 1.25、cache_read = input × 0.1
+
+# 新モデルの追加
+[models."gpt-5.6"]
+input = 5.0
+output = 15.0
+cache_write = 5.0
+cache_read = 0.5
+```
+
+- 必須キー: `input` / `output`
+- 省略可: `cache_write` / `cache_read`（省略時は input からの倍率で自動計算）
+- 複数パターンにマッチする場合、ユーザー定義 → 内蔵デフォルトの順で最初のマッチを採用
 
 ## 既知の制限
 

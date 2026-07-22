@@ -119,6 +119,14 @@ impl PricingTable {
 }
 
 fn default_override_path() -> PathBuf {
+    // CLI 慣習に合わせ ~/.config を優先し、無ければ OS 標準の config dir
+    // (macOS: ~/Library/Application Support) にフォールバック。
+    if let Some(home) = dirs::home_dir() {
+        let xdg = home.join(".config").join("llmeter").join("pricing.toml");
+        if xdg.exists() {
+            return xdg;
+        }
+    }
     dirs::config_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join("llmeter")
