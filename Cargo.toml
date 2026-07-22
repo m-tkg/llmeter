@@ -1,6 +1,6 @@
 [package]
 name = "llmeter"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 description = "AI コーディングツール（Claude Code / Codex / Cursor）の利用状況をローカルログから集計・可視化する CLI"
 repository = "https://github.com/m-tkg/llmeter"

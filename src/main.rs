@@ -13,9 +13,12 @@ use clap::{Parser, Subcommand};
 use model::{Session, Tool};
 use std::path::PathBuf;
 
+const REPO_URL: &str = "https://github.com/m-tkg/llmeter";
+
 #[derive(Parser)]
 #[command(
     name = "llmeter",
+    version,
     about = "AI コーディングツール（Claude Code / Codex / Cursor）の利用状況をローカルログから集計・可視化する CLI",
     after_help = "\
 例:
@@ -111,6 +114,16 @@ enum Command {
     Pricing {
         #[command(subcommand)]
         action: PricingAction,
+    },
+    /// llmeter 自身を最新版に更新する（cargo install --git で再ビルド）
+    #[command(after_help = "\
+GitHub の main ブランチの版と比較し、新しければ
+`cargo install --git https://github.com/m-tkg/llmeter --force` を実行する。
+ビルドに1〜2分かかる。cargo が必要。")]
+    Update {
+        /// バージョンが同じでも強制的に再インストールする
+        #[arg(long)]
+        force: bool,
     },
 }
 
@@ -261,8 +274,46 @@ fn main() -> Result<()> {
                 }
             }
         },
+        Command::Update { force } => self_update(force)?,
     }
 
+    Ok(())
+}
+
+/// リモート main の Cargo.toml から version を取得する（失敗時 None）。
+fn fetch_remote_version() -> Option<String> {
+    let url = "https://raw.githubusercontent.com/m-tkg/llmeter/main/Cargo.toml";
+    let body = ureq::get(url)
+        .timeout(std::time::Duration::from_secs(10))
+        .call()
+        .ok()?
+        .into_string()
+        .ok()?;
+    let parsed: toml::Value = toml::from_str(&body).ok()?;
+    Some(parsed.get("package")?.get("version")?.as_str()?.to_string())
+}
+
+fn self_update(force: bool) -> Result<()> {
+    let current = env!("CARGO_PKG_VERSION");
+    println!("現在のバージョン: {current}");
+
+    match fetch_remote_version() {
+        Some(remote) if remote == current && !force => {
+            println!("最新版です（{remote}）。--force で強制再インストールできる。");
+            return Ok(());
+        }
+        Some(remote) => println!("リモートのバージョン: {remote}。更新する。"),
+        None => println!("リモートのバージョン確認に失敗。そのまま再インストールする。"),
+    }
+
+    let status = std::process::Command::new("cargo")
+        .args(["install", "--git", REPO_URL, "--force"])
+        .status();
+    match status {
+        Ok(s) if s.success() => println!("更新完了。"),
+        Ok(s) => anyhow::bail!("cargo install が失敗した (exit: {s})"),
+        Err(e) => anyhow::bail!("cargo を実行できない: {e}（cargo のインストールが必要）"),
+    }
     Ok(())
 }
 

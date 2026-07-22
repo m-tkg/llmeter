@@ -36,6 +36,15 @@ cd llmeter
 cargo install --path .
 ```
 
+### アップデート
+
+```bash
+llmeter update           # リモートと版比較し、新しければ再ビルドしてインストール
+llmeter update --force   # 同バージョンでも強制再インストール
+```
+
+内部で `cargo install --git ... --force` を実行するため cargo が必要です（ビルドに1〜2分）。
+
 ## 使い方
 
 ### レポート生成（HTML）
