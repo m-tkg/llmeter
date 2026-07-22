@@ -82,6 +82,23 @@ llmeter report --format md --out ./docs/usage  # 出力先を指定
 | `--format <html\|md>` | `html` | 出力形式 |
 | `--out <DIR>` | `./llmeter-report/` | 出力先ディレクトリ（なければ作成） |
 | `--tools <LIST>` | 全ツール | `claude,codex,cursor` のカンマ区切りで限定 |
+| `--offline` | オフ | ネットワークアクセスなしで実行（LiteLLM 料金データはキャッシュ+埋め込みのみ使用） |
+| `--analyze <AGENT>` | 省略時は分析なし | レポートを AI エージェント CLI に読ませ、コスト削減提案をマージする（`claude` / `codex` / `cursor`） |
+| `--analyze-timeout <SECS>` | `300` | `--analyze` 実行時のタイムアウト（秒） |
+
+### AI 分析（--analyze）
+
+`--analyze <agent>` を付けると、生成したレポート（Markdown）を指定した AI エージェント CLI に読ませ、コスト削減提案を生成してレポート本体にマージします。
+
+```bash
+llmeter report --analyze claude                          # claude -p でレポートを分析
+llmeter report --format md --analyze codex                # codex exec で分析、Markdown 出力
+llmeter report --analyze cursor --analyze-timeout 600     # cursor-agent、タイムアウトを延長
+```
+
+- 対応エージェント: `claude`（`claude -p`）、`codex`（`codex exec`）、`cursor`（`cursor-agent -p`）。各 CLI がインストール済み・認証済みであることが前提です
+- レポート Markdown を stdin で渡し、エージェントの出力（Markdown、`### 分析サマリー` / `### コスト削減提案` / `### 利用パターンの気づき` の3節）を「今週の気づき」の直後にマージします（Markdown 出力では `## AI 分析（<agent>）` セクション、HTML 出力では同トーンのカード）
+- エージェント未インストール・実行失敗・タイムアウト・出力が空のいずれかの場合は stderr に警告を出し、分析なしで通常のレポートを出力します（レポート生成自体は失敗しません）
 
 ### セッション一覧（ターミナル表示）
 
@@ -190,7 +207,7 @@ cargo test     # 単体テスト
 cargo clippy   # lint
 ```
 
-構成: `src/sources/`（各ツールのパーサ）、`src/aggregate.rs`（集計）、`src/pricing.rs`（コスト計算・3層解決）、`src/litellm.rs`（LiteLLM 料金データの取得・キャッシュ）、`src/insights.rs`（気づき生成）、`src/render/`（HTML / Markdown 出力）、`src/cache.rs`（増分キャッシュ）。
+構成: `src/sources/`（各ツールのパーサ）、`src/aggregate.rs`（集計）、`src/pricing.rs`（コスト計算・3層解決）、`src/litellm.rs`（LiteLLM 料金データの取得・キャッシュ）、`src/analyze.rs`（AI 分析エージェント実行・md→html変換）、`src/insights.rs`（気づき生成）、`src/render/`（HTML / Markdown 出力）、`src/cache.rs`（増分キャッシュ）。
 
 ## ライセンス
 

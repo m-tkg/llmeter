@@ -43,7 +43,11 @@ body {
 .stat-note { font-size: 12px; color: var(--muted); }
 .insights h3 { font-size: 14px; font-weight: 600; margin: 0 0 12px; }
 .insights .bolt { color: var(--accent); }
-.insights ul { margin: 0; padding-left: 18px; color: var(--ink-2); font-size: 13.5px; line-height: 1.9; }
+.insights ul { margin: 0 0 12px; padding-left: 18px; color: var(--ink-2); font-size: 13.5px; line-height: 1.9; }
+.insights ul:last-child { margin-bottom: 0; }
+.insights p { margin: 0 0 12px; color: var(--ink-2); font-size: 13.5px; line-height: 1.9; }
+.insights p:last-child { margin-bottom: 0; }
+.insights code { background: var(--grid); padding: 1px 5px; border-radius: 4px; font-size: 0.9em; }
 .section-title { font-size: 14px; font-weight: 600; margin: 0 0 12px; color: var(--ink); }
 .chart-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
 .legend { display: flex; gap: 16px; font-size: 12px; color: var(--ink-2); }
@@ -106,7 +110,7 @@ const TOOLTIP_JS: &str = r#"
 })();
 "#;
 
-fn html_escape(s: &str) -> String {
+pub(crate) fn html_escape(s: &str) -> String {
     s.replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")
@@ -436,7 +440,13 @@ fn render_repo_bar_list(by_repo: &[RepoStat]) -> String {
     s
 }
 
-pub fn write_index(out_dir: &Path, sessions: &[Session], overview: &Overview, insight_lines: &[String]) -> Result<()> {
+pub fn write_index(
+    out_dir: &Path,
+    sessions: &[Session],
+    overview: &Overview,
+    insight_lines: &[String],
+    analysis: Option<(&str, &str)>,
+) -> Result<()> {
     let mut body = String::new();
 
     let period_text = if let (Some(first), Some(last)) = (overview.daily.first(), overview.daily.last()) {
@@ -471,6 +481,16 @@ pub fn write_index(out_dir: &Path, sessions: &[Session], overview: &Overview, in
         let _ = write!(body, "<li>{}</li>", render_insight_line(line));
     }
     body.push_str("</ul></div>");
+
+    if let Some((agent, content)) = analysis {
+        let inner = crate::analyze::markdown_to_html(content);
+        let _ = write!(
+            body,
+            "<div class=\"card insights\"><h3>🤖 AI 分析（{}）</h3>{}</div>",
+            html_escape(agent),
+            inner
+        );
+    }
 
     let _ = write!(
         body,

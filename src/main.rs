@@ -1,4 +1,5 @@
 mod aggregate;
+mod analyze;
 mod cache;
 mod insights;
 mod litellm;
@@ -27,6 +28,7 @@ const REPO_URL: &str = "https://github.com/m-tkg/llmeter";
   llmeter report --days 7 --out ./weekly  直近7日を ./weekly/ に出力
   llmeter sessions --sort errors          ツールエラー率順にセッション一覧を表示
   llmeter session <ID>                    セッション詳細を Markdown で標準出力
+  llmeter report --analyze claude         AI にコスト削減提案を分析させレポートにマージ
 
 詳細は各サブコマンドの --help（例: llmeter report --help）を参照。"
 )]
@@ -47,7 +49,8 @@ enum Command {
   llmeter report                                # HTML、直近30日、./llmeter-report/
   llmeter report --format md                    # Markdown で ./llmeter-report/ に出力
   llmeter report --format md --out ./docs/usage # Markdown を任意のディレクトリへ
-  llmeter report --days 90 --tools claude,codex # 期間90日、対象ツールを限定")]
+  llmeter report --days 90 --tools claude,codex # 期間90日、対象ツールを限定
+  llmeter report --analyze claude               # レポートを claude に読ませ AI 分析をマージ")]
     Report {
         /// 集計対象期間（日数）
         #[arg(long, default_value_t = 30)]
@@ -64,6 +67,12 @@ enum Command {
         /// ネットワークアクセスなしで実行（LiteLLM 料金データはキャッシュ+埋め込みのみ使用）
         #[arg(long)]
         offline: bool,
+        /// レポートを AI エージェント CLI に読ませ、コスト削減提案をマージする（要インストール・認証済み）
+        #[arg(long, value_parser = ["claude", "codex", "cursor"])]
+        analyze: Option<String>,
+        /// --analyze 実行時のタイムアウト（秒）
+        #[arg(long, default_value_t = 300)]
+        analyze_timeout: u64,
     },
     /// セッション一覧をターミナルにテーブル表示
     #[command(after_help = "\
@@ -191,7 +200,7 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Command::Report { days, format, out, tools, offline } => {
+        Command::Report { days, format, out, tools, offline, analyze, analyze_timeout } => {
             let tools = parse_tools(&tools);
             let pricing = pricing::PricingTable::load(None, offline);
             let mut sessions = collect_sessions(days, &tools)?;
@@ -200,12 +209,21 @@ fn main() -> Result<()> {
             let overview = aggregate::build_overview(&sessions);
             let insight_lines = insights::generate(&sessions, Utc::now());
 
+            let analysis_text = if let Some(agent) = &analyze {
+                println!("AI 分析中 ({agent})...");
+                let input_md = render::markdown::build_index_markdown(&sessions, &overview, &insight_lines, None)?;
+                analyze::run_agent(agent, &input_md, analyze_timeout)
+            } else {
+                None
+            };
+            let analysis = analyze.as_deref().zip(analysis_text.as_deref());
+
             std::fs::create_dir_all(&out)?;
             let is_md = matches!(format.as_str(), "md" | "markdown");
             if is_md {
-                render::markdown::write_index(&out, &sessions, &overview, &insight_lines)?;
+                render::markdown::write_index(&out, &sessions, &overview, &insight_lines, analysis)?;
             } else {
-                render::html::write_index(&out, &sessions, &overview, &insight_lines)?;
+                render::html::write_index(&out, &sessions, &overview, &insight_lines, analysis)?;
             }
 
             let sources = all_sources();
