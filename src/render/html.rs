@@ -482,16 +482,6 @@ pub fn write_index(
     }
     body.push_str("</ul></div>");
 
-    if let Some((agent, content)) = analysis {
-        let inner = crate::analyze::markdown_to_html(content);
-        let _ = write!(
-            body,
-            "<div class=\"card insights\"><h3>🤖 AI 分析（{}）</h3>{}</div>",
-            html_escape(agent),
-            inner
-        );
-    }
-
     let _ = write!(
         body,
         "<div class=\"card\"><div class=\"chart-head\"><h2 class=\"section-title\">日別コスト</h2>{}</div>{}</div>",
@@ -511,6 +501,16 @@ pub fn write_index(
         render_model_bar_list(&overview.by_model),
         render_repo_bar_list(&overview.by_repo)
     );
+
+    if let Some((agent, content)) = analysis {
+        let inner = crate::analyze::markdown_to_html(content);
+        let _ = write!(
+            body,
+            "<div class=\"card insights\"><h3>🤖 AI 分析（{}）</h3>{}</div>",
+            html_escape(agent),
+            inner
+        );
+    }
 
     let _ = write!(
         body,

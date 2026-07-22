@@ -6,7 +6,7 @@ use std::path::Path;
 
 /// レポート本文（Overview〜セッション一覧）の Markdown を組み立てる。
 /// `--format md` の report.md 本体と、`--analyze` 時の分析入力の両方で使う。
-/// `analysis` を渡すと「今週の気づき」直後に AI 分析セクションをマージする。
+/// `analysis` を渡すと「内訳（リポジトリ別）」の直後に AI 分析セクションをマージする。
 pub fn build_index_markdown(
     sessions: &[Session],
     overview: &Overview,
@@ -34,11 +34,6 @@ pub fn build_index_markdown(
         writeln!(md, "- {line}")?;
     }
     writeln!(md)?;
-
-    if let Some((agent, content)) = analysis {
-        writeln!(md, "## AI 分析（{agent}）\n")?;
-        writeln!(md, "{content}\n")?;
-    }
 
     writeln!(md, "### 日別コスト\n")?;
     let max_daily = overview.daily.iter().map(|d| d.total_cost).fold(0.0_f64, f64::max);
@@ -68,6 +63,11 @@ pub fn build_index_markdown(
         writeln!(md, "- {}: ${:.2} ({} セッション)", r.repo, r.cost, r.sessions)?;
     }
     writeln!(md)?;
+
+    if let Some((agent, content)) = analysis {
+        writeln!(md, "## AI 分析（{agent}）\n")?;
+        writeln!(md, "{content}\n")?;
+    }
 
     writeln!(md, "## セッション一覧\n")?;
     writeln!(md, "| 初回プロンプト | ツール | リポジトリ | ターン | エラー率 | 所要時間 | コスト |")?;
