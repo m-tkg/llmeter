@@ -155,11 +155,16 @@ fn median_u32(values: &mut [u32]) -> f64 {
     }
 }
 
-pub fn filter_since(sessions: Vec<Session>, since: Option<DateTime<Utc>>) -> Vec<Session> {
-    match since {
-        Some(s) => sessions.into_iter().filter(|sess| sess.start >= s).collect(),
-        None => sessions,
-    }
+pub fn filter_range(
+    sessions: Vec<Session>,
+    since: Option<DateTime<Utc>>,
+    until: Option<DateTime<Utc>>,
+) -> Vec<Session> {
+    sessions
+        .into_iter()
+        .filter(|sess| since.is_none_or(|s| sess.start >= s))
+        .filter(|sess| until.is_none_or(|u| sess.start <= u))
+        .collect()
 }
 
 #[cfg(test)]

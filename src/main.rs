@@ -26,6 +26,10 @@ const REPO_URL: &str = "https://github.com/m-tkg/llmeter";
   llmeter report                          直近30日を HTML で ./llmeter-report/ に出力
   llmeter report --format md              同じ内容を Markdown で出力
   llmeter report --days 7 --out ./weekly  直近7日を ./weekly/ に出力
+  llmeter report --since 2026-06-01 --until 2026-06-30 --format md
+                                           2026年6月分を Markdown で出力
+  llmeter report --format md --stdout | pbcopy
+                                           Markdown をファイルに書かず標準出力へ
   llmeter sessions --sort errors          ツールエラー率順にセッション一覧を表示
   llmeter session <ID>                    セッション詳細を Markdown で標準出力
   llmeter report --analyze claude         AI にコスト削減提案を分析させレポートにマージ
@@ -50,11 +54,19 @@ enum Command {
   llmeter report --format md                    # Markdown で ./llmeter-report/ に出力
   llmeter report --format md --out ./docs/usage # Markdown を任意のディレクトリへ
   llmeter report --days 90 --tools claude,codex # 期間90日、対象ツールを限定
+  llmeter report --since 2026-06-01 --until 2026-06-30 --format md # 日付範囲指定
+  llmeter report --format md --stdout           # Markdown を標準出力へ（ファイル書き込みなし）
   llmeter report --analyze claude               # レポートを claude に読ませ AI 分析をマージ")]
     Report {
-        /// 集計対象期間（日数）
+        /// 集計対象期間（日数）。--since/--until 指定時は無視される
         #[arg(long, default_value_t = 30)]
         days: i64,
+        /// 集計開始日（YYYY-MM-DD、この日を含む）。指定時は --days を無視
+        #[arg(long, value_name = "DATE")]
+        since: Option<chrono::NaiveDate>,
+        /// 集計終了日（YYYY-MM-DD、この日を含む）。指定時は --days を無視
+        #[arg(long, value_name = "DATE")]
+        until: Option<chrono::NaiveDate>,
         /// 出力形式
         #[arg(long, default_value = "html", value_parser = ["html", "md"])]
         format: String,
@@ -73,6 +85,9 @@ enum Command {
         /// --analyze 実行時のタイムアウト（秒）
         #[arg(long, default_value_t = 300)]
         analyze_timeout: u64,
+        /// ファイルに書き出さず Markdown を標準出力に出す（--format md 専用）
+        #[arg(long)]
+        stdout: bool,
     },
     /// セッション一覧をターミナルにテーブル表示
     #[command(after_help = "\
@@ -170,8 +185,24 @@ fn all_sources() -> Vec<Box<dyn sources::Source>> {
     ]
 }
 
-fn collect_sessions(days: i64, tools: &[Tool]) -> Result<Vec<Session>> {
-    let since = Utc::now() - Duration::days(days);
+fn resolve_date_range(
+    days: i64,
+    since: Option<chrono::NaiveDate>,
+    until: Option<chrono::NaiveDate>,
+) -> (Option<chrono::DateTime<Utc>>, Option<chrono::DateTime<Utc>>) {
+    if since.is_none() && until.is_none() {
+        return (Some(Utc::now() - Duration::days(days)), None);
+    }
+    let since_dt = since.and_then(|d| d.and_hms_opt(0, 0, 0)).map(|dt| dt.and_utc());
+    let until_dt = until.and_then(|d| d.and_hms_opt(23, 59, 59)).map(|dt| dt.and_utc());
+    (since_dt, until_dt)
+}
+
+fn collect_sessions(
+    since: Option<chrono::DateTime<Utc>>,
+    until: Option<chrono::DateTime<Utc>>,
+    tools: &[Tool],
+) -> Result<Vec<Session>> {
     let cache = cache::Cache::open()?;
 
     let mut result = Vec::new();
@@ -193,30 +224,53 @@ fn collect_sessions(days: i64, tools: &[Tool]) -> Result<Vec<Session>> {
         }
     }
 
-    Ok(aggregate::filter_since(result, Some(since)))
+    Ok(aggregate::filter_range(result, since, until))
 }
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Command::Report { days, format, out, tools, offline, analyze, analyze_timeout } => {
+        Command::Report {
+            days,
+            since,
+            until,
+            format,
+            out,
+            tools,
+            offline,
+            analyze,
+            analyze_timeout,
+            stdout,
+        } => {
+            if stdout && format != "md" {
+                anyhow::bail!("--stdout は --format md と併用する必要がある");
+            }
             let tools = parse_tools(&tools);
             let pricing = pricing::PricingTable::load(None, offline);
-            let mut sessions = collect_sessions(days, &tools)?;
+            let (since_dt, until_dt) = resolve_date_range(days, since, until);
+            let mut sessions = collect_sessions(since_dt, until_dt, &tools)?;
             apply_cost(&mut sessions, &pricing);
 
             let overview = aggregate::build_overview(&sessions);
             let insight_lines = insights::generate(&sessions, Utc::now());
 
             let analysis_text = if let Some(agent) = &analyze {
-                println!("AI 分析中 ({agent})...");
+                if !stdout {
+                    println!("AI 分析中 ({agent})...");
+                }
                 let input_md = render::markdown::build_index_markdown(&sessions, &overview, &insight_lines, None)?;
                 analyze::run_agent(agent, &input_md, analyze_timeout)
             } else {
                 None
             };
             let analysis = analyze.as_deref().zip(analysis_text.as_deref());
+
+            if stdout {
+                let md = render::markdown::build_index_markdown(&sessions, &overview, &insight_lines, analysis)?;
+                print!("{md}");
+                return Ok(());
+            }
 
             std::fs::create_dir_all(&out)?;
             let is_md = matches!(format.as_str(), "md" | "markdown");
@@ -247,7 +301,8 @@ fn main() -> Result<()> {
         Command::Sessions { days, repo, sort, tools, offline } => {
             let tools = parse_tools(&tools);
             let pricing = pricing::PricingTable::load(None, offline);
-            let mut sessions = collect_sessions(days, &tools)?;
+            let (since_dt, until_dt) = resolve_date_range(days, None, None);
+            let mut sessions = collect_sessions(since_dt, until_dt, &tools)?;
             apply_cost(&mut sessions, &pricing);
 
             if let Some(repo) = &repo {

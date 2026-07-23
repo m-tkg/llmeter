@@ -65,6 +65,18 @@ llmeter report --tools claude,codex    # 対象ツールを絞る（claude / cod
 ```bash
 llmeter report --format md                     # ./llmeter-report/report.md に出力
 llmeter report --format md --out ./docs/usage  # 出力先を指定
+llmeter report --format md --stdout            # ファイルに書かず標準出力へ（パイプ処理向け）
+llmeter report --format md --stdout | pbcopy   # 例: クリップボードにコピー
+```
+
+### 日付範囲を指定する
+
+`--since` / `--until`（`YYYY-MM-DD`）で絶対日付の範囲を指定できます。指定した場合 `--days` は無視されます。
+
+```bash
+llmeter report --since 2026-06-01 --until 2026-06-30 --format md  # 2026年6月分のみ
+llmeter report --since 2026-06-01                                 # 2026-06-01 以降すべて
+llmeter report --until 2026-06-30                                 # 2026-06-30 以前すべて
 ```
 
 ### レポートの出力構成
@@ -78,13 +90,16 @@ llmeter report --format md --out ./docs/usage  # 出力先を指定
 
 | オプション | デフォルト | 説明 |
 |---|---|---|
-| `--days <N>` | `30` | 集計対象期間（日数） |
+| `--days <N>` | `30` | 集計対象期間（日数）。`--since`/`--until` 指定時は無視 |
+| `--since <DATE>` | 省略時はなし | 集計開始日（`YYYY-MM-DD`、この日を含む） |
+| `--until <DATE>` | 省略時はなし | 集計終了日（`YYYY-MM-DD`、この日を含む） |
 | `--format <html\|md>` | `html` | 出力形式 |
 | `--out <DIR>` | `./llmeter-report/` | 出力先ディレクトリ（なければ作成） |
 | `--tools <LIST>` | 全ツール | `claude,codex,cursor` のカンマ区切りで限定 |
 | `--offline` | オフ | ネットワークアクセスなしで実行（LiteLLM 料金データはキャッシュ+埋め込みのみ使用） |
 | `--analyze <AGENT>` | 省略時は分析なし | レポートを AI エージェント CLI に読ませ、コスト削減提案をマージする（`claude` / `codex` / `cursor`） |
 | `--analyze-timeout <SECS>` | `300` | `--analyze` 実行時のタイムアウト（秒） |
+| `--stdout` | オフ | ファイルに書き出さず Markdown を標準出力に出す（`--format md` 専用） |
 
 ### AI 分析（--analyze）
 
