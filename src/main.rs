@@ -112,19 +112,23 @@ enum Command {
         #[arg(long)]
         offline: bool,
     },
-    /// セッション詳細トランスクリプトを標準出力に表示
+    /// セッション詳細トランスクリプトを標準出力または --out ディレクトリに出力
     #[command(after_help = "\
 セッション ID は `llmeter sessions` や HTML レポートのリンク先ファイル名で確認できる。
 
 例:
-  llmeter session 0151c9d7-7a81-4429-a1d1-e1b4d878a64e                # Markdown
-  llmeter session 0151c9d7-... --format html > session.html          # HTML を保存")]
+  llmeter session 0151c9d7-7a81-4429-a1d1-e1b4d878a64e                # Markdown を標準出力
+  llmeter session 0151c9d7-... --format html --out ./llmeter-report # HTML をファイルに保存
+  llmeter session 0151c9d7-... --format html > session.html          # シェルリダイレクトでも可")]
     Session {
         /// セッション ID（`llmeter sessions` で確認）
         id: String,
         /// 出力形式
         #[arg(long, default_value = "md", value_parser = ["md", "html"])]
         format: String,
+        /// 出力先ディレクトリ（なければ作成）。省略時は標準出力
+        #[arg(long)]
+        out: Option<PathBuf>,
         /// ネットワークアクセスなしで実行（LiteLLM 料金データはキャッシュ+埋め込みのみ使用）
         #[arg(long)]
         offline: bool,
@@ -313,8 +317,8 @@ fn main() -> Result<()> {
             sort_sessions(&mut sessions, &sort);
             render::print_sessions_table(&sessions);
         }
-        Command::Session { id, format, offline } => {
-            print_session_detail(&id, &format, offline)?;
+        Command::Session { id, format, out, offline } => {
+            print_session_detail(&id, &format, out.as_deref(), offline)?;
         }
         Command::Cache { action } => {
             let cache = cache::Cache::open()?;
@@ -509,7 +513,12 @@ fn sort_sessions(sessions: &mut [Session], sort: &str) {
     }
 }
 
-fn print_session_detail(id: &str, format: &str, offline: bool) -> Result<()> {
+fn print_session_detail(
+    id: &str,
+    format: &str,
+    out: Option<&std::path::Path>,
+    offline: bool,
+) -> Result<()> {
     let cache = cache::Cache::open()?;
 
     for source in all_sources() {
@@ -532,9 +541,21 @@ fn print_session_detail(id: &str, format: &str, offline: bool) -> Result<()> {
                 let mut transcript = source.parse_transcript(&path, id)?;
                 let pricing = pricing::PricingTable::load(None, offline);
                 apply_cost(std::slice::from_mut(&mut transcript.session), &pricing);
-                match format {
-                    "html" => render::html::print_session_detail(&transcript),
-                    _ => render::markdown::print_session_detail(&transcript),
+                if let Some(out_dir) = out {
+                    std::fs::create_dir_all(out_dir)?;
+                    match format {
+                        "html" => render::html::write_session_detail(out_dir, &transcript)?,
+                        _ => render::markdown::write_session_detail(out_dir, &transcript)?,
+                    }
+                    let ext = if format == "html" { "html" } else { "md" };
+                    let path = out_dir.join("sessions").join(format!("{id}.{ext}"));
+                    let path = path.canonicalize().unwrap_or(path);
+                    println!("{}", path.display());
+                } else {
+                    match format {
+                        "html" => render::html::print_session_detail(&transcript),
+                        _ => render::markdown::print_session_detail(&transcript),
+                    }
                 }
                 return Ok(());
             }

@@ -129,7 +129,9 @@ llmeter sessions --sort turns             # cost | turns | errors
 
 ```bash
 llmeter session <セッションID>                              # Markdown で標準出力
-llmeter session <セッションID> --format html > session.html # HTML をファイルに保存
+llmeter session <セッションID> --out ./llmeter-report       # sessions/<ID>.md に保存
+llmeter session <セッションID> --format html --out ./out    # sessions/<ID>.html に保存
+llmeter session <セッションID> --format html > session.html # シェルリダイレクトでも可
 ```
 
 ### キャッシュ操作
