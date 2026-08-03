@@ -18,7 +18,7 @@ AI コーディングツール（Claude Code / Codex / Cursor）の利用状況�
 |---|---|---|
 | Claude Code | `~/.claude/projects/**/*.jsonl` | トークン・コストとも正確に集計 |
 | Codex | `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` | `token_count` イベントから集計 |
-| Cursor | `~/.cursor/chats/<workspace>/<session>/` | ログにトークン情報がないため文字数からの概算（estimated 表示） |
+| Cursor | `~/.cursor/chats/<workspace>/<session>/store.db` および `~/.cursor/projects/<workspace>/agent-transcripts/*.jsonl`（chats に無いセッションのみ） | ログにトークン情報がないため文字数からの概算（estimated 表示） |
 
 ログの読み取りのみを行い、元ファイルは変更しません。
 
