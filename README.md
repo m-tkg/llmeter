@@ -50,7 +50,7 @@ llmeter update --force   # 同バージョンでも強制再インストール
 ### レポート生成（HTML）
 
 ```bash
-llmeter report                         # 直近30日を ./llmeter-report/ に出力
+llmeter report                         # デフォルト設定で出力（config 未設定時は直近30日/HTML/./llmeter-report/）
 llmeter report --days 7                # 直近7日
 llmeter report --out ~/reports/ai      # 出力先を指定
 llmeter report --tools claude,codex    # 対象ツールを絞る（claude / codex / cursor）
@@ -90,16 +90,47 @@ llmeter report --until 2026-06-30                                 # 2026-06-30 �
 
 | オプション | デフォルト | 説明 |
 |---|---|---|
-| `--days <N>` | `30` | 集計対象期間（日数）。`--since`/`--until` 指定時は無視 |
-| `--since <DATE>` | 省略時はなし | 集計開始日（`YYYY-MM-DD`、この日を含む） |
-| `--until <DATE>` | 省略時はなし | 集計終了日（`YYYY-MM-DD`、この日を含む） |
-| `--format <html\|md>` | `html` | 出力形式 |
-| `--out <DIR>` | `./llmeter-report/` | 出力先ディレクトリ（なければ作成） |
-| `--tools <LIST>` | 全ツール | `claude,codex,cursor` のカンマ区切りで限定 |
-| `--offline` | オフ | ネットワークアクセスなしで実行（LiteLLM 料金データはキャッシュ+埋め込みのみ使用） |
-| `--analyze <AGENT>` | 省略時は分析なし | レポートを AI エージェント CLI に読ませ、コスト削減提案をマージする（`claude` / `codex` / `cursor`） |
-| `--analyze-timeout <SECS>` | `300` | `--analyze` 実行時のタイムアウト（秒） |
-| `--stdout` | オフ | ファイルに書き出さず Markdown を標準出力に出す（`--format md` 専用） |
+| `--days <N>` | `30`（または config） | 集計対象期間（日数）。`--since`/`--until` 指定時は無視 |
+| `--since <DATE>` | 省略時はなし（または config） | 集計開始日（`YYYY-MM-DD`、この日を含む） |
+| `--until <DATE>` | 省略時はなし（または config） | 集計終了日（`YYYY-MM-DD`、この日を含む） |
+| `--format <html\|md>` | `html`（または config） | 出力形式 |
+| `--out <DIR>` | `./llmeter-report/`（または config） | 出力先ディレクトリ（なければ作成） |
+| `--tools <LIST>` | 全ツール（または config） | `claude,codex,cursor` のカンマ区切りで限定 |
+| `--offline` | オフ（または config） | ネットワークアクセスなしで実行（LiteLLM 料金データはキャッシュ+埋め込みのみ使用） |
+| `--analyze <AGENT>` | 省略時は分析なし（または config） | レポートを AI エージェント CLI に読ませ、コスト削減提案をマージする（`claude` / `codex` / `cursor`） |
+| `--analyze-timeout <SECS>` | `300`（または config） | `--analyze` 実行時のタイムアウト（秒） |
+| `--stdout` | オフ（または config） | ファイルに書き出さず Markdown を標準出力に出す（`--format md` 専用） |
+
+コマンドライン引数が指定された項目は config より優先されます。
+
+### config.toml（report のデフォルト）
+
+`llmeter report` のデフォルト値は `~/.config/llmeter/config.toml` の `[report]` で上書きできます。ファイルが無い場合は従来どおり直近30日・HTML・`./llmeter-report/` です。配置場所の解決は `pricing.toml` と同様（`~/.config/llmeter/config.toml` を優先し、無ければ OS 標準の設定ディレクトリ）です。
+
+```toml
+# ~/.config/llmeter/config.toml
+# llmeter report のデフォルト。CLI で指定した項目が優先。
+
+[report]
+days = 7
+format = "md"
+out = "~/reports/llmeter"
+
+# 絶対日付（どちらか/両方指定時は days を無視。CLI と同じ）
+# since = "2026-06-01"
+# until = "2026-06-30"
+
+# tools = ["claude", "codex"]  # 省略時は全ツール
+
+offline = false
+
+# analyze = "claude"           # "claude" | "codex" | "cursor"
+# analyze_timeout = 300
+
+# stdout = false               # true なら md を標準出力（ファイル書き込みなし）
+```
+
+例: 上記の config があるとき `llmeter report` だけで直近7日分を `~/reports/llmeter/report.md` に出力します。`llmeter report --format html` のように CLI で指定した項目だけ上書きされます。
 
 ### AI 分析（--analyze）
 
@@ -224,7 +255,7 @@ cargo test     # 単体テスト
 cargo clippy   # lint
 ```
 
-構成: `src/sources/`（各ツールのパーサ）、`src/aggregate.rs`（集計）、`src/pricing.rs`（コスト計算・3層解決）、`src/litellm.rs`（LiteLLM 料金データの取得・キャッシュ）、`src/analyze.rs`（AI 分析エージェント実行・md→html変換）、`src/insights.rs`（気づき生成）、`src/render/`（HTML / Markdown 出力）、`src/cache.rs`（増分キャッシュ）。
+構成: `src/sources/`（各ツールのパーサ）、`src/aggregate.rs`（集計）、`src/config.rs`（`config.toml` の読み込み）、`src/pricing.rs`（コスト計算・3層解決）、`src/litellm.rs`（LiteLLM 料金データの取得・キャッシュ）、`src/analyze.rs`（AI 分析エージェント実行・md→html変換）、`src/insights.rs`（気づき生成）、`src/render/`（HTML / Markdown 出力）、`src/cache.rs`（増分キャッシュ）。
 
 ## ライセンス
 

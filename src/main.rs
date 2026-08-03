@@ -1,6 +1,7 @@
 mod aggregate;
 mod analyze;
 mod cache;
+mod config;
 mod insights;
 mod litellm;
 mod model;
@@ -56,11 +57,13 @@ enum Command {
   llmeter report --days 90 --tools claude,codex # 期間90日、対象ツールを限定
   llmeter report --since 2026-06-01 --until 2026-06-30 --format md # 日付範囲指定
   llmeter report --format md --stdout           # Markdown を標準出力へ（ファイル書き込みなし）
-  llmeter report --analyze claude               # レポートを claude に読ませ AI 分析をマージ")]
+  llmeter report --analyze claude               # レポートを claude に読ませ AI 分析をマージ
+
+デフォルト値は ~/.config/llmeter/config.toml の [report] で上書きできる（ファイルが無ければ直近30日/HTML/./llmeter-report/）。")]
     Report {
         /// 集計対象期間（日数）。--since/--until 指定時は無視される
-        #[arg(long, default_value_t = 30)]
-        days: i64,
+        #[arg(long)]
+        days: Option<i64>,
         /// 集計開始日（YYYY-MM-DD、この日を含む）。指定時は --days を無視
         #[arg(long, value_name = "DATE")]
         since: Option<chrono::NaiveDate>,
@@ -68,11 +71,11 @@ enum Command {
         #[arg(long, value_name = "DATE")]
         until: Option<chrono::NaiveDate>,
         /// 出力形式
-        #[arg(long, default_value = "html", value_parser = ["html", "md"])]
-        format: String,
+        #[arg(long, value_parser = ["html", "md"])]
+        format: Option<String>,
         /// 出力先ディレクトリ（なければ作成）
-        #[arg(long, default_value = "./llmeter-report/")]
-        out: PathBuf,
+        #[arg(long)]
+        out: Option<PathBuf>,
         /// 対象ツールをカンマ区切りで限定（claude, codex, cursor）。省略時は全ツール
         #[arg(long, value_name = "TOOLS")]
         tools: Option<String>,
@@ -83,8 +86,8 @@ enum Command {
         #[arg(long, value_parser = ["claude", "codex", "cursor"])]
         analyze: Option<String>,
         /// --analyze 実行時のタイムアウト（秒）
-        #[arg(long, default_value_t = 300)]
-        analyze_timeout: u64,
+        #[arg(long)]
+        analyze_timeout: Option<u64>,
         /// ファイルに書き出さず Markdown を標準出力に出す（--format md 専用）
         #[arg(long)]
         stdout: bool,
@@ -247,41 +250,50 @@ fn main() -> Result<()> {
             analyze_timeout,
             stdout,
         } => {
-            if stdout && format != "md" {
-                anyhow::bail!("--stdout は --format md と併用する必要がある");
-            }
-            let tools = parse_tools(&tools);
-            let pricing = pricing::PricingTable::load(None, offline);
-            let (since_dt, until_dt) = resolve_date_range(days, since, until);
+            let opts = config::resolve_report_options(config::ReportCliOptions {
+                days,
+                since,
+                until,
+                format,
+                out,
+                tools,
+                offline,
+                analyze,
+                analyze_timeout,
+                stdout,
+            })?;
+            let tools = parse_tools(&opts.tools);
+            let pricing = pricing::PricingTable::load(None, opts.offline);
+            let (since_dt, until_dt) = resolve_date_range(opts.days, opts.since, opts.until);
             let mut sessions = collect_sessions(since_dt, until_dt, &tools)?;
             apply_cost(&mut sessions, &pricing);
 
             let overview = aggregate::build_overview(&sessions);
             let insight_lines = insights::generate(&sessions, Utc::now());
 
-            let analysis_text = if let Some(agent) = &analyze {
-                if !stdout {
+            let analysis_text = if let Some(agent) = &opts.analyze {
+                if !opts.stdout {
                     println!("AI 分析中 ({agent})...");
                 }
                 let input_md = render::markdown::build_index_markdown(&sessions, &overview, &insight_lines, None)?;
-                analyze::run_agent(agent, &input_md, analyze_timeout)
+                analyze::run_agent(agent, &input_md, opts.analyze_timeout)
             } else {
                 None
             };
-            let analysis = analyze.as_deref().zip(analysis_text.as_deref());
+            let analysis = opts.analyze.as_deref().zip(analysis_text.as_deref());
 
-            if stdout {
+            if opts.stdout {
                 let md = render::markdown::build_index_markdown(&sessions, &overview, &insight_lines, analysis)?;
                 print!("{md}");
                 return Ok(());
             }
 
-            std::fs::create_dir_all(&out)?;
-            let is_md = matches!(format.as_str(), "md" | "markdown");
+            std::fs::create_dir_all(&opts.out)?;
+            let is_md = matches!(opts.format.as_str(), "md" | "markdown");
             if is_md {
-                render::markdown::write_index(&out, &sessions, &overview, &insight_lines, analysis)?;
+                render::markdown::write_index(&opts.out, &sessions, &overview, &insight_lines, analysis)?;
             } else {
-                render::html::write_index(&out, &sessions, &overview, &insight_lines, analysis)?;
+                render::html::write_index(&opts.out, &sessions, &overview, &insight_lines, analysis)?;
             }
 
             let sources = all_sources();
@@ -294,13 +306,13 @@ fn main() -> Result<()> {
                     Err(_) => continue,
                 };
                 if is_md {
-                    render::markdown::write_session_detail(&out, &transcript)?;
+                    render::markdown::write_session_detail(&opts.out, &transcript)?;
                 } else {
-                    render::html::write_session_detail(&out, &transcript)?;
+                    render::html::write_session_detail(&opts.out, &transcript)?;
                 }
             }
 
-            let index_path = if is_md { out.join("report.md") } else { out.join("index.html") };
+            let index_path = if is_md { opts.out.join("report.md") } else { opts.out.join("index.html") };
             let index_path = index_path.canonicalize().unwrap_or(index_path);
             println!("{}", index_path.display());
         }
