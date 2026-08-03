@@ -155,10 +155,10 @@ GitHub の main ブランチの版と比較し、新しければ
 enum PricingAction {
     /// TTL を無視して LiteLLM 料金データを強制的に再取得する
     Refresh,
-    /// 指定モデルの解決結果（採用層・単価）を表示する
+    /// 指定モデルの解決結果（採用層・単価）を表示する。省略時は全エントリを一覧表示。
     Show {
         /// モデル名（ログ上の表記、例: claude-sonnet-5-20260115）
-        model: String,
+        model: Option<String>,
     },
 }
 
@@ -296,7 +296,9 @@ fn main() -> Result<()> {
                 }
             }
 
-            println!("レポート出力: {}", out.display());
+            let index_path = if is_md { out.join("report.md") } else { out.join("index.html") };
+            let index_path = index_path.canonicalize().unwrap_or(index_path);
+            println!("{}", index_path.display());
         }
         Command::Sessions { days, repo, sort, tools, offline } => {
             let tools = parse_tools(&tools);
@@ -334,16 +336,9 @@ fn main() -> Result<()> {
             },
             PricingAction::Show { model } => {
                 let pricing = pricing::PricingTable::load(None, false);
-                match pricing.resolve(&model) {
-                    Some((source, p)) => {
-                        println!("モデル: {model}");
-                        println!("採用層: {}", source.as_str());
-                        println!("input:       {:.4} $/1M tokens", p.input);
-                        println!("output:      {:.4} $/1M tokens", p.output);
-                        println!("cache_write: {:.4} $/1M tokens", p.cache_write_rate());
-                        println!("cache_read:  {:.4} $/1M tokens", p.cache_read_rate());
-                    }
-                    None => println!("未知モデル: {model}（料金データが見つからない）"),
+                match model {
+                    Some(model) => print_pricing_resolved(&pricing, &model),
+                    None => print_pricing_list(&pricing),
                 }
             }
         },
@@ -388,6 +383,51 @@ fn self_update(force: bool) -> Result<()> {
         Err(e) => anyhow::bail!("cargo を実行できない: {e}（cargo のインストールが必要）"),
     }
     Ok(())
+}
+
+fn print_pricing_resolved(pricing: &pricing::PricingTable, model: &str) {
+    match pricing.resolve(model) {
+        Some((source, p)) => {
+            println!("モデル: {model}");
+            println!("採用層: {}", source.as_str());
+            println!("input:       {:.4} $/1M tokens", p.input);
+            println!("output:      {:.4} $/1M tokens", p.output);
+            println!("cache_write: {:.4} $/1M tokens", p.cache_write_rate());
+            println!("cache_read:  {:.4} $/1M tokens", p.cache_read_rate());
+        }
+        None => println!("未知モデル: {model}（料金データが見つからない）"),
+    }
+}
+
+fn print_pricing_list(pricing: &pricing::PricingTable) {
+    let entries = pricing.all_entries();
+    if entries.is_empty() {
+        println!("料金データが見つからない");
+        return;
+    }
+    println!("{:<52} {:<30} {:>10} {:>10}", "モデル", "層", "input", "output");
+    for entry in &entries {
+        println!(
+            "{:<52} {:<30} {:>10.4} {:>10.4}",
+            truncate_display(&entry.name, 52),
+            truncate_display(entry.source.as_str(), 30),
+            entry.pricing.input,
+            entry.pricing.output,
+        );
+    }
+    println!("\n{} 件", entries.len());
+}
+
+fn truncate_display(text: &str, max_chars: usize) -> String {
+    let char_count = text.chars().count();
+    if char_count <= max_chars {
+        return text.to_string();
+    }
+    if max_chars <= 1 {
+        return "…".to_string();
+    }
+    let prefix: String = text.chars().take(max_chars - 1).collect();
+    format!("{prefix}…")
 }
 
 fn apply_cost(sessions: &mut [Session], pricing: &pricing::PricingTable) {
