@@ -296,7 +296,9 @@ fn main() -> Result<()> {
                 }
             }
 
-            println!("レポート出力: {}", out.display());
+            let index_path = if is_md { out.join("report.md") } else { out.join("index.html") };
+            let index_path = index_path.canonicalize().unwrap_or(index_path);
+            println!("{}", index_path.display());
         }
         Command::Sessions { days, repo, sort, tools, offline } => {
             let tools = parse_tools(&tools);
