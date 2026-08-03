@@ -23,6 +23,14 @@ impl ModelPricing {
     }
 }
 
+/// 料金テーブル内の1エントリ（`pricing show` の一覧表示用）。
+#[derive(Debug, Clone)]
+pub struct PricingEntry {
+    pub name: String,
+    pub source: PricingSource,
+    pub pricing: ModelPricing,
+}
+
 /// 単価がどの層から採用されたか（`pricing show` の表示用）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PricingSource {
@@ -178,6 +186,34 @@ impl PricingTable {
         best.map(|(_, p)| p)
     }
 
+    /// pricing.toml・LiteLLM・埋め込みの全エントリを名前順で返す。
+    pub fn all_entries(&self) -> Vec<PricingEntry> {
+        let mut entries = Vec::new();
+        for (pattern, pricing) in &self.user_entries {
+            entries.push(PricingEntry {
+                name: pattern.clone(),
+                source: PricingSource::User,
+                pricing: *pricing,
+            });
+        }
+        for (key, pricing) in &self.litellm {
+            entries.push(PricingEntry {
+                name: key.clone(),
+                source: PricingSource::LiteLlm,
+                pricing: *pricing,
+            });
+        }
+        for (pattern, pricing) in &self.embedded_entries {
+            entries.push(PricingEntry {
+                name: pattern.clone(),
+                source: PricingSource::Embedded,
+                pricing: *pricing,
+            });
+        }
+        entries.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        entries
+    }
+
     /// 既知モデルならコストを、未知モデルなら None を返す。
     pub fn calculate(&self, model: &str, usage: &Usage) -> Option<f64> {
         let (_, pricing) = self.resolve(model)?;
@@ -301,6 +337,21 @@ mod tests {
         litellm.insert("zz-abc".into(), pricing(5.0, 15.0)); // 6文字 < 8、embedded にも非該当
         let table = table_with(vec![], litellm);
         assert!(table.resolve("zz-abc-nightly").is_none());
+    }
+
+    #[test]
+    fn all_entries_includes_user_litellm_and_embedded() {
+        let mut litellm = HashMap::new();
+        litellm.insert("gpt-4o".into(), pricing(2.5, 10.0));
+        let table = table_with(vec![("composer".into(), pricing(0.5, 2.5))], litellm);
+        let entries = table.all_entries();
+        assert!(entries.iter().any(|e| e.name == "composer" && e.source == PricingSource::User));
+        assert!(entries.iter().any(|e| e.name == "gpt-4o" && e.source == PricingSource::LiteLlm));
+        assert!(entries.iter().any(|e| e.name == "claude-opus" && e.source == PricingSource::Embedded));
+        let names: Vec<_> = entries.iter().map(|e| e.name.as_str()).collect();
+        let mut sorted = names.clone();
+        sorted.sort_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()));
+        assert_eq!(names, sorted);
     }
 
     #[test]
