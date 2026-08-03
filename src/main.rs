@@ -350,28 +350,81 @@ fn main() -> Result<()> {
 
 /// リモート main の Cargo.toml から version を取得する（失敗時 None）。
 fn fetch_remote_version() -> Option<String> {
-    let url = "https://raw.githubusercontent.com/m-tkg/llmeter/main/Cargo.toml";
+    fetch_remote_version_from_github_api().or_else(fetch_remote_version_from_raw)
+}
+
+fn parse_version_from_cargo_toml(body: &str) -> Option<String> {
+    let parsed: toml::Value = toml::from_str(body).ok()?;
+    parsed.get("package")?.get("version")?.as_str().map(str::to_string)
+}
+
+fn fetch_remote_version_from_github_api() -> Option<String> {
+    let url = "https://api.github.com/repos/m-tkg/llmeter/contents/Cargo.toml?ref=main";
     let body = ureq::get(url)
+        .set("User-Agent", "llmeter")
+        .set("Accept", "application/vnd.github.raw")
         .timeout(std::time::Duration::from_secs(10))
         .call()
         .ok()?
         .into_string()
         .ok()?;
-    let parsed: toml::Value = toml::from_str(&body).ok()?;
-    Some(parsed.get("package")?.get("version")?.as_str()?.to_string())
+    parse_version_from_cargo_toml(&body)
+}
+
+fn fetch_remote_version_from_raw() -> Option<String> {
+    let cache_bust = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let url = format!("https://raw.githubusercontent.com/m-tkg/llmeter/main/Cargo.toml?nocache={cache_bust}");
+    let body = ureq::get(&url)
+        .timeout(std::time::Duration::from_secs(10))
+        .call()
+        .ok()?
+        .into_string()
+        .ok()?;
+    parse_version_from_cargo_toml(&body)
+}
+
+fn parse_version_triple(version: &str) -> Option<(u64, u64, u64)> {
+    let core = version.split(|c| c == '-' || c == '+').next()?;
+    let mut parts = core.split('.');
+    let major = parts.next()?.parse().ok()?;
+    let minor = parts.next()?.parse().ok()?;
+    let patch = parts.next()?.parse().ok()?;
+    Some((major, minor, patch))
+}
+
+fn is_version_newer(remote: &str, current: &str) -> bool {
+    match (parse_version_triple(remote), parse_version_triple(current)) {
+        (Some(remote), Some(current)) => remote > current,
+        _ => false,
+    }
 }
 
 fn self_update(force: bool) -> Result<()> {
     let current = env!("CARGO_PKG_VERSION");
     println!("現在のバージョン: {current}");
 
-    match fetch_remote_version() {
-        Some(remote) if remote == current && !force => {
-            println!("最新版です（{remote}）。--force で強制再インストールできる。");
-            return Ok(());
+    if !force {
+        match fetch_remote_version() {
+            Some(remote) if remote == current => {
+                println!("最新版です（{remote}）。--force で強制再インストールできる。");
+                return Ok(());
+            }
+            Some(remote) if is_version_newer(&remote, current) => {
+                println!("新しいバージョンがあります: {remote}（現在: {current}）。更新する。");
+            }
+            Some(remote) => {
+                println!(
+                    "リモート ({remote}) はローカル ({current}) より新しくない。--force で強制再インストールできる。"
+                );
+                return Ok(());
+            }
+            None => println!("リモートのバージョン確認に失敗。そのまま再インストールする。"),
         }
-        Some(remote) => println!("リモートのバージョン: {remote}。更新する。"),
-        None => println!("リモートのバージョン確認に失敗。そのまま再インストールする。"),
+    } else {
+        println!("--force 指定のため再インストールする。");
     }
 
     let status = std::process::Command::new("cargo")
@@ -490,4 +543,27 @@ fn print_session_detail(id: &str, format: &str, offline: bool) -> Result<()> {
 
     println!("セッションが見つからない: {id}");
     Ok(())
+}
+
+#[cfg(test)]
+mod update_tests {
+    use super::*;
+
+    #[test]
+    fn compares_semver_triples() {
+        assert!(is_version_newer("0.3.0", "0.2.0"));
+        assert!(!is_version_newer("0.2.0", "0.3.0"));
+        assert!(!is_version_newer("0.3.0", "0.3.0"));
+        assert!(is_version_newer("1.0.0", "0.9.9"));
+    }
+
+    #[test]
+    fn parses_version_from_cargo_toml() {
+        let body = r#"
+[package]
+name = "llmeter"
+version = "0.3.0"
+"#;
+        assert_eq!(parse_version_from_cargo_toml(body).as_deref(), Some("0.3.0"));
+    }
 }
