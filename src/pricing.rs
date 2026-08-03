@@ -140,8 +140,8 @@ impl PricingTable {
     pub fn resolve(&self, model: &str) -> Option<(PricingSource, ModelPricing)> {
         let lower = model.to_lowercase();
 
-        if let Some((_, p)) = self.user_entries.iter().find(|(pat, _)| lower.contains(pat.as_str())) {
-            return Some((PricingSource::User, *p));
+        if let Some(p) = self.longest_user_match(&lower) {
+            return Some((PricingSource::User, p));
         }
 
         if let Some(p) = self.litellm.get(&lower) {
@@ -165,6 +165,20 @@ impl PricingTable {
         }
 
         None
+    }
+
+    /// pricing.toml の部分一致パターンのうち、モデル名に含まれる最長パターンを採用する。
+    fn longest_user_match(&self, lower_model: &str) -> Option<ModelPricing> {
+        let mut best: Option<(usize, ModelPricing)> = None;
+        for (pat, pricing) in &self.user_entries {
+            if lower_model.contains(pat.as_str()) {
+                let len = pat.len();
+                if best.as_ref().is_none_or(|(best_len, _)| len > *best_len) {
+                    best = Some((len, *pricing));
+                }
+            }
+        }
+        best.map(|(_, p)| p)
     }
 
     /// ログのモデル名と LiteLLM キーのうち短い方が長い方の接頭辞になっている場合、
@@ -286,6 +300,21 @@ mod tests {
 
     fn pricing(input: f64, output: f64) -> ModelPricing {
         ModelPricing { input, output, cache_write: None, cache_read: None }
+    }
+
+    #[test]
+    fn user_longest_substring_match_prefers_more_specific_pattern() {
+        let table = table_with(
+            vec![
+                ("composer-2.5-fast".into(), pricing(3.0, 15.0)),
+                ("composer-2.5".into(), pricing(0.5, 2.5)),
+            ],
+            HashMap::new(),
+        );
+        let (_, p) = table.resolve("composer-2.5-fast").unwrap();
+        assert_eq!(p.input, 3.0);
+        let (_, p) = table.resolve("composer-2.5").unwrap();
+        assert_eq!(p.input, 0.5);
     }
 
     #[test]
