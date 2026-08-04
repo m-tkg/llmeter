@@ -66,6 +66,29 @@ body {
 .breakdown-label { font-size: 13px; font-weight: 600; color: var(--ink-2); margin: 0 0 8px; }
 .mini-stats { display: flex; flex-wrap: wrap; gap: 12px 24px; margin-bottom: 16px; font-size: 13px; color: var(--ink-2); }
 .mini-stats b { color: var(--ink); font-variant-numeric: tabular-nums; font-weight: 650; }
+.tool-filters { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 16px; }
+.tool-filter {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--ink-2);
+  font-size: 12px;
+  cursor: pointer;
+  line-height: 1.2;
+}
+.tool-filter:hover { color: var(--ink); border-color: rgba(255,255,255,0.18); }
+.tool-filter.active {
+  background: rgba(255,255,255,0.08);
+  color: var(--ink);
+  border-color: rgba(255,255,255,0.22);
+}
+.tool-filter .swatch { width: 8px; height: 8px; border-radius: 2px; flex-shrink: 0; }
+.tool-filter .count { color: var(--muted); font-variant-numeric: tabular-nums; }
+#session-table tr.row-hidden { display: none; }
 .table-scroll {
   overflow-x: auto;
   width: 100%;
@@ -198,10 +221,56 @@ const TABLE_SORT_JS: &str = r#"
   if (!table) return;
   var tbody = table.querySelector('tbody');
   var headers = table.querySelectorAll('th.sortable');
-  var state = { key: 'start', asc: false };
+  var filterButtons = document.querySelectorAll('.tool-filter');
+  var state = { key: 'start', asc: false, tool: '' };
 
   function cellValue(row, key) {
     return row.getAttribute('data-' + key) || '';
+  }
+
+  function visibleRows() {
+    return Array.from(tbody.querySelectorAll('tr')).filter(function (row) {
+      return !row.classList.contains('row-hidden');
+    });
+  }
+
+  function applyToolFilter() {
+    tbody.querySelectorAll('tr').forEach(function (row) {
+      var tool = row.getAttribute('data-tool') || '';
+      var match = !state.tool || tool === state.tool;
+      row.classList.toggle('row-hidden', !match);
+    });
+    updateMiniStats();
+  }
+
+  function updateMiniStats() {
+    var rows = visibleRows();
+    var countEl = document.getElementById('mini-session-count');
+    var medianEl = document.getElementById('mini-median-turns');
+    var errorsEl = document.getElementById('mini-mean-errors');
+    if (!countEl || !medianEl || !errorsEl) return;
+
+    countEl.textContent = String(rows.length);
+    if (rows.length === 0) {
+      medianEl.textContent = '0.0';
+      errorsEl.textContent = '0.0%';
+      return;
+    }
+
+    var turns = rows.map(function (row) {
+      return parseFloat(row.getAttribute('data-turns') || '0');
+    });
+    turns.sort(function (a, b) { return a - b; });
+    var mid = Math.floor(turns.length / 2);
+    var median = turns.length % 2
+      ? turns[mid]
+      : (turns[mid - 1] + turns[mid]) / 2;
+    medianEl.textContent = median.toFixed(1);
+
+    var errSum = rows.reduce(function (sum, row) {
+      return sum + parseFloat(row.getAttribute('data-errors') || '0');
+    }, 0);
+    errorsEl.textContent = (errSum / rows.length).toFixed(1) + '%';
   }
 
   function sortRows(key, asc) {
@@ -241,7 +310,18 @@ const TABLE_SORT_JS: &str = r#"
     });
   });
 
+  filterButtons.forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      var tool = btn.getAttribute('data-tool') || '';
+      state.tool = tool;
+      filterButtons.forEach(function (b) { b.classList.remove('active'); });
+      btn.classList.add('active');
+      applyToolFilter();
+    });
+  });
+
   sortRows(state.key, state.asc);
+  applyToolFilter();
 })();
 "#;
 
@@ -260,6 +340,35 @@ fn sortable_th(classes: &str, sort_key: &str, label: &str) -> String {
     format!(
         "<th class=\"sortable {classes}\" data-sort=\"{sort_key}\"><span class=\"th-label\">{label}</span><span class=\"sort-mark\" aria-hidden=\"true\"></span></th>"
     )
+}
+
+fn render_tool_filters(sessions: &[Session]) -> String {
+    let mut counts = std::collections::BTreeMap::new();
+    for s in sessions {
+        *counts.entry(s.tool.as_str()).or_insert(0) += 1;
+    }
+    let mut out = String::from(
+        "<div class=\"tool-filters\" role=\"group\" aria-label=\"ツールで絞り込み\">",
+    );
+    let _ = write!(
+        out,
+        "<button type=\"button\" class=\"tool-filter active\" data-tool=\"\">すべて <span class=\"count\">{}</span></button>",
+        sessions.len()
+    );
+    for tool in TOOL_ORDER {
+        let count = counts.get(tool).copied().unwrap_or(0);
+        if count == 0 {
+            continue;
+        }
+        let _ = write!(
+            out,
+            "<button type=\"button\" class=\"tool-filter\" data-tool=\"{tool}\"><span class=\"swatch\" style=\"background:{}\"></span>{} <span class=\"count\">{count}</span></button>",
+            tool_color(tool),
+            tool_label(tool)
+        );
+    }
+    out.push_str("</div>");
+    out
 }
 
 fn truncate(s: &str, n: usize) -> String {
@@ -660,11 +769,12 @@ pub fn write_index(
 
     let _ = write!(
         body,
-        "<div class=\"card session-card\"><h2 class=\"section-title\">セッション一覧</h2><div class=\"mini-stats\"><span>ターン数中央値 <b>{:.1}</b></span><span>平均エラー率 <b>{:.1}%</b></span><span>セッション数 <b>{}</b></span></div>",
+        "<div class=\"card session-card\"><h2 class=\"section-title\">セッション一覧</h2><div class=\"mini-stats\"><span>ターン数中央値 <b id=\"mini-median-turns\">{:.1}</b></span><span>平均エラー率 <b id=\"mini-mean-errors\">{:.1}%</b></span><span>セッション数 <b id=\"mini-session-count\">{}</b></span></div>",
         overview.median_turns,
         overview.mean_tool_error_rate * 100.0,
         overview.session_count
     );
+    body.push_str(&render_tool_filters(sessions));
     body.push_str(
         "<div class=\"table-scroll\"><table id=\"session-table\"><colgroup>\
 <col class=\"col-prompt\"><col class=\"col-start\"><col class=\"col-tool\"><col class=\"col-repo\">\
