@@ -70,10 +70,14 @@ pub fn build_index_markdown(
     }
 
     writeln!(md, "## セッション一覧\n")?;
-    writeln!(md, "| 初回プロンプト | ツール | リポジトリ | ターン | エラー率 | 所要時間 | コスト |")?;
-    writeln!(md, "|---|---|---|---|---|---|---|")?;
+    writeln!(
+        md,
+        "| 初回プロンプト | 開始 (UTC) | ツール | リポジトリ | ターン | エラー率 | 所要時間 | コスト |"
+    )?;
+    writeln!(md, "|---|---|---|---|---|---|---|---|")?;
     for s in sessions {
         let prompt = truncate(&s.list_prompt(), 50);
+        let start = super::format_session_start(s.start);
         let repo = s.repo.as_deref().unwrap_or("-");
         let cost = if s.cost.has_unknown {
             format!("${:.2}+?", s.cost.amount_usd)
@@ -82,9 +86,10 @@ pub fn build_index_markdown(
         };
         writeln!(
             md,
-            "| [{}](sessions/{}.md) | {} | {} | {} | {:.0}% | {} | {} |",
+            "| [{}](sessions/{}.md) | {} | {} | {} | {} | {:.0}% | {} | {} |",
             prompt,
             s.id,
+            start,
             s.tool.as_str(),
             repo,
             s.turns,

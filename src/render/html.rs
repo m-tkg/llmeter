@@ -66,6 +66,11 @@ body {
 .mini-stats b { color: var(--ink); font-variant-numeric: tabular-nums; font-weight: 650; }
 table { width: 100%; border-collapse: collapse; }
 th { text-align: left; font-size: 11px; color: var(--muted); font-weight: 600; padding: 8px 10px; border-bottom: 1px solid var(--border); }
+th.sortable { cursor: pointer; user-select: none; }
+th.sortable:hover { color: var(--ink-2); }
+th.sort-asc::after { content: " ▲"; font-size: 10px; }
+th.sort-desc::after { content: " ▼"; font-size: 10px; }
+th.num { text-align: right; }
 td { padding: 10px; border-bottom: 1px solid var(--grid); font-size: 13.5px; color: var(--ink-2); }
 tbody tr:hover td { background: rgba(255,255,255,0.03); }
 td.num { text-align: right; font-variant-numeric: tabular-nums; }
@@ -110,11 +115,68 @@ const TOOLTIP_JS: &str = r#"
 })();
 "#;
 
+const TABLE_SORT_JS: &str = r#"
+(function () {
+  var table = document.getElementById('session-table');
+  if (!table) return;
+  var tbody = table.querySelector('tbody');
+  var headers = table.querySelectorAll('th.sortable');
+  var state = { key: 'start', asc: false };
+
+  function cellValue(row, key) {
+    return row.getAttribute('data-' + key) || '';
+  }
+
+  function sortRows(key, asc) {
+    var rows = Array.from(tbody.querySelectorAll('tr'));
+    rows.sort(function (a, b) {
+      var av = cellValue(a, key);
+      var bv = cellValue(b, key);
+      var an = parseFloat(av);
+      var bn = parseFloat(bv);
+      var cmp;
+      if (!Number.isNaN(an) && !Number.isNaN(bn)) {
+        cmp = an - bn;
+      } else {
+        cmp = av.localeCompare(bv, 'ja');
+      }
+      return asc ? cmp : -cmp;
+    });
+    rows.forEach(function (row) { tbody.appendChild(row); });
+    headers.forEach(function (th) {
+      th.classList.remove('sort-asc', 'sort-desc');
+    });
+    var active = table.querySelector('th.sortable[data-sort="' + key + '"]');
+    if (active) active.classList.add(asc ? 'sort-asc' : 'sort-desc');
+  }
+
+  headers.forEach(function (th) {
+    th.addEventListener('click', function () {
+      var key = th.getAttribute('data-sort');
+      if (!key) return;
+      if (state.key === key) {
+        state.asc = !state.asc;
+      } else {
+        state.key = key;
+        state.asc = key === 'prompt' || key === 'tool' || key === 'repo';
+      }
+      sortRows(state.key, state.asc);
+    });
+  });
+
+  sortRows(state.key, state.asc);
+})();
+"#;
+
 pub(crate) fn html_escape(s: &str) -> String {
     s.replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")
         .replace('"', "&quot;")
+}
+
+fn html_attr_escape(s: &str) -> String {
+    html_escape(s).replace('\'', "&#39;")
 }
 
 fn truncate(s: &str, n: usize) -> String {
@@ -180,9 +242,9 @@ fn axis_ticks(max_value: f64) -> Vec<f64> {
     (0..=count).map(|i| step * i as f64).collect()
 }
 
-fn page(title: &str, body: &str, include_tooltip_js: bool) -> String {
-    let script = if include_tooltip_js {
-        format!("<script>{TOOLTIP_JS}</script>")
+fn page(title: &str, body: &str, include_index_js: bool) -> String {
+    let script = if include_index_js {
+        format!("<script>{TOOLTIP_JS}</script><script>{TABLE_SORT_JS}</script>")
     } else {
         String::new()
     };
@@ -520,10 +582,20 @@ pub fn write_index(
         overview.session_count
     );
     body.push_str(
-        "<table><thead><tr><th>初回プロンプト</th><th>ツール</th><th>リポジトリ</th><th class=\"num\">ターン</th><th class=\"num\">エラー率</th><th class=\"num\">所要時間</th><th class=\"num\">コスト</th></tr></thead><tbody>",
+        "<table id=\"session-table\"><thead><tr>\
+<th class=\"sortable\" data-sort=\"prompt\">初回プロンプト</th>\
+<th class=\"sortable num\" data-sort=\"start\">開始 (UTC)</th>\
+<th class=\"sortable\" data-sort=\"tool\">ツール</th>\
+<th class=\"sortable\" data-sort=\"repo\">リポジトリ</th>\
+<th class=\"sortable num\" data-sort=\"turns\">ターン</th>\
+<th class=\"sortable num\" data-sort=\"errors\">エラー率</th>\
+<th class=\"sortable num\" data-sort=\"duration\">所要時間</th>\
+<th class=\"sortable num\" data-sort=\"cost\">コスト</th>\
+</tr></thead><tbody>",
     );
     for s in sessions {
         let prompt = truncate(&s.list_prompt(), 50);
+        let start = super::format_session_start(s.start);
         let repo = s.repo.as_deref().unwrap_or("-");
         let cost = if s.cost.has_unknown {
             format!("${:.2}+?", s.cost.amount_usd)
@@ -540,9 +612,26 @@ pub fn write_index(
         };
         let _ = write!(
             body,
-            "<tr><td><a href=\"sessions/{}.html\">{}</a></td><td class=\"tool-cell\"><span class=\"swatch\" style=\"background:{}\"></span>{}</td><td>{}</td><td class=\"num\">{}</td><td class=\"num\">{}</td><td class=\"num\">{}</td><td class=\"num cost\">{}</td></tr>",
+            "<tr data-prompt=\"{}\" data-start=\"{}\" data-tool=\"{}\" data-repo=\"{}\" data-turns=\"{}\" data-errors=\"{}\" data-duration=\"{}\" data-cost=\"{}\">\
+<td><a href=\"sessions/{}.html\">{}</a></td>\
+<td class=\"num\">{}</td>\
+<td class=\"tool-cell\"><span class=\"swatch\" style=\"background:{}\"></span>{}</td>\
+<td>{}</td>\
+<td class=\"num\">{}</td>\
+<td class=\"num\">{}</td>\
+<td class=\"num\">{}</td>\
+<td class=\"num cost\">{}</td></tr>",
+            html_attr_escape(&s.list_prompt()),
+            s.start.timestamp_millis(),
+            html_attr_escape(s.tool.as_str()),
+            html_attr_escape(repo),
+            s.turns,
+            err_pct,
+            s.duration_secs(),
+            s.cost.amount_usd,
             s.id,
             html_escape(&prompt),
+            html_escape(&start),
             tool_color(s.tool.as_str()),
             tool_label(s.tool.as_str()),
             html_escape(repo),

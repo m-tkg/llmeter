@@ -107,8 +107,12 @@ enum Command {
         /// リポジトリ名で絞り込み（部分一致）
         #[arg(long)]
         repo: Option<String>,
-        /// 並び順
-        #[arg(long, default_value = "cost", value_parser = ["cost", "turns", "errors"])]
+        /// 並び順（cost, turns, errors, start, duration, prompt, repo, tool）
+        #[arg(
+            long,
+            default_value = "cost",
+            value_parser = ["cost", "turns", "errors", "start", "duration", "prompt", "repo", "tool"]
+        )]
         sort: String,
         /// 対象ツールをカンマ区切りで限定（claude, codex, cursor）。省略時は全ツール
         #[arg(long, value_name = "TOOLS")]
@@ -278,7 +282,8 @@ fn main() -> Result<()> {
             let tools = parse_tools(&opts.tools);
             let pricing = pricing::PricingTable::load(None, opts.offline);
             let (since_dt, until_dt) = resolve_date_range(opts.days, opts.since, opts.until);
-            let sessions = prepare_sessions(since_dt, until_dt, &tools, &pricing)?;
+            let mut sessions = prepare_sessions(since_dt, until_dt, &tools, &pricing)?;
+            render::sort_sessions(&mut sessions, "start");
 
             let overview = aggregate::build_overview(&sessions);
             let insight_lines = insights::generate(&sessions, Utc::now());
@@ -337,7 +342,7 @@ fn main() -> Result<()> {
             if let Some(repo) = &repo {
                 sessions.retain(|s| s.repo.as_deref() == Some(repo.as_str()));
             }
-            sort_sessions(&mut sessions, &sort);
+            render::sort_sessions(&mut sessions, &sort);
             render::print_sessions_table(&sessions);
         }
         Command::Session { id, format, out, offline } => {
@@ -545,18 +550,6 @@ fn cost_from_models(models: &[model::ModelUsage], pricing: &pricing::PricingTabl
         }
     }
     model::Cost { amount_usd: total, has_unknown }
-}
-
-fn sort_sessions(sessions: &mut [Session], sort: &str) {
-    match sort {
-        "turns" => sessions.sort_by(|a, b| b.turns.cmp(&a.turns)),
-        "errors" => sessions.sort_by(|a, b| {
-            b.tool_error_rate()
-                .partial_cmp(&a.tool_error_rate())
-                .unwrap()
-        }),
-        _ => sessions.sort_by(|a, b| b.cost.amount_usd.partial_cmp(&a.cost.amount_usd).unwrap()),
-    }
 }
 
 fn print_session_detail(
