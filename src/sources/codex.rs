@@ -1,8 +1,9 @@
+use crate::daily::{add_model_usage, map_to_daily_models, usage_delta};
 use crate::model::{ModelUsage, Session, ToolCallStat, Tool, Transcript, TranscriptEvent, Usage};
 use anyhow::Result;
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, NaiveDate, Utc};
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 
 pub struct CodexSource {
@@ -116,6 +117,7 @@ fn build_session(path: &Path) -> Result<Option<Session>> {
     let mut turns: u32 = 0;
     let mut first_prompt: Option<String> = None;
     let mut last_total_usage: Option<Usage> = None;
+    let mut daily_model_usage: BTreeMap<NaiveDate, HashMap<String, Usage>> = BTreeMap::new();
 
     let mut call_id_to_name: HashMap<String, String> = HashMap::new();
     let mut tool_calls: HashMap<String, ToolCallStat> = HashMap::new();
@@ -162,7 +164,17 @@ fn build_session(path: &Path) -> Result<Option<Session>> {
                                     cache_read_tokens: cached,
                                     estimated: false,
                                 };
+                                let prev = last_total_usage.unwrap_or_default();
+                                let delta = usage_delta(&prev, &u);
                                 last_total_usage = Some(u);
+                                if let Some(m) = &model {
+                                    let date = line.ts.map(|t| t.date_naive()).unwrap_or_else(|| {
+                                        start
+                                            .map(|s| s.date_naive())
+                                            .unwrap_or_else(|| Utc::now().date_naive())
+                                    });
+                                    add_model_usage(&mut daily_model_usage, date, m, &delta);
+                                }
                             }
                     }
                     _ => {}
@@ -230,6 +242,8 @@ fn build_session(path: &Path) -> Result<Option<Session>> {
         usage,
         tool_calls: tool_calls.into_values().collect(),
         cost: crate::model::Cost::default(),
+        daily_models: map_to_daily_models(daily_model_usage),
+        daily_cost: BTreeMap::new(),
     }))
 }
 

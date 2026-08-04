@@ -65,13 +65,17 @@ pub fn build_overview(sessions: &[Session]) -> Overview {
         turns_list.push(s.turns);
         error_rates.push(s.tool_error_rate());
 
-        let date = s.start.date_naive();
-        let day = daily_map.entry(date).or_insert_with(|| DailyStat {
-            date,
-            ..Default::default()
-        });
-        *day.cost_by_tool.entry(s.tool.as_str()).or_insert(0.0) += s.cost.amount_usd;
-        day.total_cost += s.cost.amount_usd;
+        for (date, cost) in session_daily_costs(s) {
+            let day = daily_map.entry(date).or_insert_with(|| DailyStat {
+                date,
+                ..Default::default()
+            });
+            *day.cost_by_tool.entry(s.tool.as_str()).or_insert(0.0) += cost.amount_usd;
+            day.total_cost += cost.amount_usd;
+            if cost.has_unknown {
+                overview.has_unknown_cost = true;
+            }
+        }
 
         let tool_stat = tool_map.entry(s.tool.as_str()).or_insert_with(|| ToolStat {
             tool: s.tool.as_str(),
@@ -162,9 +166,42 @@ pub fn filter_range(
 ) -> Vec<Session> {
     sessions
         .into_iter()
-        .filter(|sess| since.is_none_or(|s| sess.start >= s))
-        .filter(|sess| until.is_none_or(|u| sess.start <= u))
+        .filter(|sess| session_in_range(sess, since, until))
         .collect()
+}
+
+fn session_in_range(
+    sess: &Session,
+    since: Option<DateTime<Utc>>,
+    until: Option<DateTime<Utc>>,
+) -> bool {
+    if !sess.daily_cost.is_empty() {
+        return sess.daily_cost.keys().any(|date| date_in_range(*date, since, until));
+    }
+    since.is_none_or(|s| sess.start >= s) && until.is_none_or(|u| sess.start <= u)
+}
+
+fn date_in_range(
+    date: NaiveDate,
+    since: Option<DateTime<Utc>>,
+    until: Option<DateTime<Utc>>,
+) -> bool {
+    since.is_none_or(|s| date >= s.date_naive()) && until.is_none_or(|u| date <= u.date_naive())
+}
+
+fn session_daily_costs(sess: &Session) -> BTreeMap<NaiveDate, crate::model::Cost> {
+    if !sess.daily_cost.is_empty() {
+        return sess.daily_cost.clone();
+    }
+    let mut fallback = BTreeMap::new();
+    fallback.insert(
+        sess.start.date_naive(),
+        crate::model::Cost {
+            amount_usd: sess.cost.amount_usd,
+            has_unknown: sess.cost.has_unknown,
+        },
+    );
+    fallback
 }
 
 #[cfg(test)]
@@ -172,6 +209,7 @@ mod tests {
     use super::*;
     use crate::model::{Cost, ModelUsage, Tool, ToolCallStat, Usage};
     use chrono::TimeZone;
+    use std::collections::BTreeMap;
 
     fn session(tool: Tool, cost: f64, model: &str, tokens: u64, turns: u32) -> Session {
         Session {
@@ -191,7 +229,76 @@ mod tests {
             usage: Usage { input_tokens: tokens, ..Default::default() },
             tool_calls: vec![ToolCallStat { name: "Bash".into(), count: 2, error_count: 1 }],
             cost: Cost { amount_usd: cost, has_unknown: false },
+            daily_models: BTreeMap::new(),
+            daily_cost: BTreeMap::new(),
         }
+    }
+
+    #[test]
+    fn overview_splits_cost_by_daily_cost() {
+        let mut daily_cost = BTreeMap::new();
+        daily_cost.insert(
+            chrono::NaiveDate::from_ymd_opt(2026, 7, 1).unwrap(),
+            Cost { amount_usd: 100.0, has_unknown: false },
+        );
+        daily_cost.insert(
+            chrono::NaiveDate::from_ymd_opt(2026, 7, 2).unwrap(),
+            Cost { amount_usd: 50.0, has_unknown: false },
+        );
+        let sessions = vec![Session {
+            tool: Tool::ClaudeCode,
+            id: "id".into(),
+            source_path: "p".into(),
+            cwd: Some("/repo".into()),
+            repo: Some("repo".into()),
+            start: Utc.with_ymd_and_hms(2026, 7, 1, 0, 0, 0).unwrap(),
+            end: Utc.with_ymd_and_hms(2026, 7, 2, 1, 0, 0).unwrap(),
+            turns: 2,
+            first_prompt: None,
+            models: vec![ModelUsage {
+                model: "claude-sonnet-5".into(),
+                usage: Usage { input_tokens: 1000, ..Default::default() },
+            }],
+            usage: Usage { input_tokens: 1000, ..Default::default() },
+            tool_calls: vec![],
+            cost: Cost { amount_usd: 150.0, has_unknown: false },
+            daily_models: BTreeMap::new(),
+            daily_cost,
+        }];
+        let ov = build_overview(&sessions);
+        assert_eq!(ov.daily.len(), 2);
+        assert!((ov.daily[0].total_cost - 100.0).abs() < 1e-9);
+        assert!((ov.daily[1].total_cost - 50.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn filter_range_uses_daily_cost_dates() {
+        let mut daily_cost = BTreeMap::new();
+        daily_cost.insert(
+            chrono::NaiveDate::from_ymd_opt(2026, 7, 2).unwrap(),
+            Cost { amount_usd: 50.0, has_unknown: false },
+        );
+        let sessions = vec![Session {
+            tool: Tool::ClaudeCode,
+            id: "id".into(),
+            source_path: "p".into(),
+            cwd: None,
+            repo: None,
+            start: Utc.with_ymd_and_hms(2026, 7, 1, 0, 0, 0).unwrap(),
+            end: Utc.with_ymd_and_hms(2026, 7, 2, 1, 0, 0).unwrap(),
+            turns: 1,
+            first_prompt: None,
+            models: vec![],
+            usage: Usage::default(),
+            tool_calls: vec![],
+            cost: Cost { amount_usd: 50.0, has_unknown: false },
+            daily_models: BTreeMap::new(),
+            daily_cost,
+        }];
+        let since = Utc.with_ymd_and_hms(2026, 7, 2, 0, 0, 0).unwrap();
+        let until = Utc.with_ymd_and_hms(2026, 7, 2, 23, 59, 59).unwrap();
+        let filtered = filter_range(sessions, Some(since), Some(until));
+        assert_eq!(filtered.len(), 1);
     }
 
     #[test]

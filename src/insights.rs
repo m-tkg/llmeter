@@ -116,6 +116,8 @@ mod tests {
                 error_count: error_rate_pair.1,
             }],
             cost: Cost { amount_usd: cost, has_unknown: false },
+            daily_models: std::collections::BTreeMap::new(),
+            daily_cost: std::collections::BTreeMap::new(),
         }
     }
 

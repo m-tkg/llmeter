@@ -1,9 +1,10 @@
+use crate::daily::split_usage_by_duration;
 use crate::model::{ModelUsage, Session, ToolCallStat, Tool, Transcript, TranscriptEvent, Usage};
 use anyhow::Result;
 use chrono::{DateTime, TimeZone, Utc};
 use serde::Deserialize;
 use serde_json::Value;
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
@@ -420,6 +421,14 @@ fn session_from_messages(
         .unwrap_or_else(|| "cursor-unknown".into());
     let models = vec![ModelUsage { model: model_name, usage }];
 
+    let daily_models = if start.date_naive() == end.date_naive() {
+        let mut m = BTreeMap::new();
+        m.insert(start.date_naive(), models.clone());
+        m
+    } else {
+        split_usage_by_duration(start, end, &models)
+    };
+
     Some(Session {
         tool: Tool::Cursor,
         id,
@@ -434,6 +443,8 @@ fn session_from_messages(
         usage,
         tool_calls,
         cost: crate::model::Cost::default(),
+        daily_models,
+        daily_cost: BTreeMap::new(),
     })
 }
 

@@ -1,10 +1,11 @@
+use crate::daily::{add_model_usage, map_to_daily_models};
 use crate::model::{
     ModelUsage, Session, ToolCallStat, Tool, Transcript, TranscriptEvent, Usage,
 };
 use anyhow::Result;
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, NaiveDate, Utc};
 use serde::Deserialize;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 
 pub struct ClaudeCodeSource {
@@ -103,6 +104,7 @@ fn build_session(path: &Path) -> Result<Option<Session>> {
     let mut turns: u32 = 0;
     let mut first_prompt: Option<String> = None;
     let mut model_usage: HashMap<String, Usage> = HashMap::new();
+    let mut daily_model_usage: BTreeMap<NaiveDate, HashMap<String, Usage>> = BTreeMap::new();
     let mut tool_calls: HashMap<String, ToolCallStat> = HashMap::new();
     // tool_use_id -> tool name。対応する tool_result の is_error をエラーカウントに反映する。
     let mut pending_tool_uses: HashMap<String, String> = HashMap::new();
@@ -195,6 +197,10 @@ fn build_session(path: &Path) -> Result<Option<Session>> {
                                 estimated: false,
                             };
                             model_usage.entry(model.clone()).or_default().add(&u);
+                            let date = ts.map(|t| t.date_naive()).unwrap_or_else(|| {
+                                start.map(|s| s.date_naive()).unwrap_or_else(|| Utc::now().date_naive())
+                            });
+                            add_model_usage(&mut daily_model_usage, date, model, &u);
                         }
                     }
 
@@ -252,6 +258,8 @@ fn build_session(path: &Path) -> Result<Option<Session>> {
         usage,
         tool_calls: tool_calls.into_values().collect(),
         cost: crate::model::Cost::default(),
+        daily_models: map_to_daily_models(daily_model_usage),
+        daily_cost: BTreeMap::new(),
     }))
 }
 
@@ -390,6 +398,27 @@ mod tests {
         let bash = s.tool_calls.iter().find(|t| t.name == "Bash").unwrap();
         assert_eq!(bash.count, 1);
         assert_eq!(bash.error_count, 1);
+    }
+
+    #[test]
+    fn attributes_usage_to_message_date() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("session.jsonl");
+        let lines = [
+            r#"{"type":"user","message":{"role":"user","content":"day1"},"timestamp":"2026-07-01T12:00:00.000Z","cwd":"/repo","sessionId":"sess-2","uuid":"u1"}"#.to_string(),
+            r#"{"type":"assistant","message":{"model":"claude-sonnet-5","content":[{"type":"text","text":"ok"}],"usage":{"input_tokens":100,"output_tokens":10,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}},"timestamp":"2026-07-01T12:00:01.000Z","cwd":"/repo","sessionId":"sess-2","uuid":"a1"}"#.to_string(),
+            r#"{"type":"user","message":{"role":"user","content":"day2"},"timestamp":"2026-07-02T12:00:00.000Z","cwd":"/repo","sessionId":"sess-2","uuid":"u2"}"#.to_string(),
+            r#"{"type":"assistant","message":{"model":"claude-sonnet-5","content":[{"type":"text","text":"ok2"}],"usage":{"input_tokens":50,"output_tokens":5,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}},"timestamp":"2026-07-02T12:00:01.000Z","cwd":"/repo","sessionId":"sess-2","uuid":"a2"}"#.to_string(),
+        ];
+        std::fs::write(&path, lines.join("\n")).unwrap();
+        let source = ClaudeCodeSource::default();
+        let sessions = source.parse_file(&path).unwrap();
+        let s = &sessions[0];
+        assert_eq!(s.daily_models.len(), 2);
+        let d1 = chrono::NaiveDate::from_ymd_opt(2026, 7, 1).unwrap();
+        let d2 = chrono::NaiveDate::from_ymd_opt(2026, 7, 2).unwrap();
+        assert_eq!(s.daily_models.get(&d1).unwrap()[0].usage.input_tokens, 100);
+        assert_eq!(s.daily_models.get(&d2).unwrap()[0].usage.input_tokens, 50);
     }
 
     #[test]

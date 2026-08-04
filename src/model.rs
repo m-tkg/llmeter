@@ -1,5 +1,6 @@
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Tool {
@@ -92,6 +93,12 @@ pub struct Session {
     pub usage: Usage,
     pub tool_calls: Vec<ToolCallStat>,
     pub cost: Cost,
+    /// 発生日ベースのモデル別 usage（グラフの日別コスト按分用）
+    #[serde(default)]
+    pub daily_models: BTreeMap<NaiveDate, Vec<ModelUsage>>,
+    /// apply_cost 後の日別コスト（キャッシュには保存しない想定だが serde 互換のため保持可）
+    #[serde(default)]
+    pub daily_cost: BTreeMap<NaiveDate, Cost>,
 }
 
 impl Session {

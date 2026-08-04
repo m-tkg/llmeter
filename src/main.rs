@@ -2,6 +2,7 @@ mod aggregate;
 mod analyze;
 mod cache;
 mod config;
+mod daily;
 mod insights;
 mod litellm;
 mod model;
@@ -501,16 +502,39 @@ fn truncate_display(text: &str, max_chars: usize) -> String {
 
 fn apply_cost(sessions: &mut [Session], pricing: &pricing::PricingTable) {
     for s in sessions.iter_mut() {
-        let mut total = 0.0;
-        let mut has_unknown = false;
-        for mu in &s.models {
-            match pricing.calculate(&mu.model, &mu.usage) {
-                Some(c) => total += c,
-                None => has_unknown = true,
-            }
-        }
-        s.cost = model::Cost { amount_usd: total, has_unknown };
+        ensure_daily_models(s);
+        s.cost = cost_from_models(&s.models, pricing);
+        s.daily_cost = s
+            .daily_models
+            .iter()
+            .map(|(date, models)| (*date, cost_from_models(models, pricing)))
+            .collect();
     }
+}
+
+fn ensure_daily_models(s: &mut Session) {
+    if !s.daily_models.is_empty() {
+        return;
+    }
+    if s.start.date_naive() == s.end.date_naive() {
+        let mut daily_models = std::collections::BTreeMap::new();
+        daily_models.insert(s.start.date_naive(), s.models.clone());
+        s.daily_models = daily_models;
+    } else {
+        s.daily_models = daily::split_usage_by_duration(s.start, s.end, &s.models);
+    }
+}
+
+fn cost_from_models(models: &[model::ModelUsage], pricing: &pricing::PricingTable) -> model::Cost {
+    let mut total = 0.0;
+    let mut has_unknown = false;
+    for mu in models {
+        match pricing.calculate(&mu.model, &mu.usage) {
+            Some(c) => total += c,
+            None => has_unknown = true,
+        }
+    }
+    model::Cost { amount_usd: total, has_unknown }
 }
 
 fn sort_sessions(sessions: &mut [Session], sort: &str) {

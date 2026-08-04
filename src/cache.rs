@@ -138,6 +138,8 @@ mod tests {
             usage: Usage::default(),
             tool_calls: vec![],
             cost: Cost::default(),
+            daily_models: std::collections::BTreeMap::new(),
+            daily_cost: std::collections::BTreeMap::new(),
         }
     }
 
