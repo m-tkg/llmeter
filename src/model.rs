@@ -122,6 +122,15 @@ impl Session {
             self.tool_error_total() as f64 / total as f64
         }
     }
+
+    /// 一覧表示用ラベル。初回プロンプトが無い場合は短い ID にフォールバック。
+    pub fn list_prompt(&self) -> String {
+        if let Some(p) = self.first_prompt.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+            return p.to_string();
+        }
+        let short = self.id.split('-').next().unwrap_or(&self.id);
+        format!("[{}/{}]", self.tool.as_str(), short)
+    }
 }
 
 /// セッション詳細ビュー用のイベント（生ログ再パース時のみ構築、キャッシュしない）

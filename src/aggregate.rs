@@ -170,6 +170,16 @@ pub fn filter_range(
         .collect()
 }
 
+/// ターン 0 かつコスト実質ゼロのゴーストセッションを一覧・集計から除外する。
+/// `has_unknown`（$0+?）でもターン 0 なら除外する。
+pub fn filter_meaningful_sessions(sessions: Vec<Session>) -> Vec<Session> {
+    sessions.into_iter().filter(is_meaningful_session).collect()
+}
+
+pub fn is_meaningful_session(s: &Session) -> bool {
+    s.turns > 0 || s.cost.amount_usd > 0.0
+}
+
 fn session_in_range(
     sess: &Session,
     since: Option<DateTime<Utc>>,
@@ -314,5 +324,30 @@ mod tests {
         assert_eq!(ov.by_tool.len(), 2);
         assert_eq!(ov.median_turns, 4.0);
         assert!((ov.mean_tool_error_rate - 0.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn filter_meaningful_sessions_drops_ghost_sessions() {
+        let ghost = session(Tool::Cursor, 0.0, "cursor-unknown", 0, 0);
+        let real = session(Tool::ClaudeCode, 1.0, "claude-sonnet-5", 100, 2);
+        let filtered = filter_meaningful_sessions(vec![ghost, real]);
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].turns, 2);
+    }
+
+    #[test]
+    fn filter_meaningful_sessions_drops_unknown_cost_zero_turns() {
+        let mut unknown = session(Tool::Cursor, 0.0, "gpt-5.6-sol-medium", 100, 0);
+        unknown.cost.has_unknown = true;
+        let filtered = filter_meaningful_sessions(vec![unknown]);
+        assert!(filtered.is_empty());
+    }
+
+    #[test]
+    fn filter_meaningful_sessions_keeps_unknown_cost_with_turns() {
+        let mut unknown = session(Tool::Cursor, 0.0, "gpt-5.6-sol-medium", 100, 2);
+        unknown.cost.has_unknown = true;
+        let filtered = filter_meaningful_sessions(vec![unknown]);
+        assert_eq!(filtered.len(), 1);
     }
 }

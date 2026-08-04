@@ -73,7 +73,7 @@ pub fn build_index_markdown(
     writeln!(md, "| 初回プロンプト | ツール | リポジトリ | ターン | エラー率 | 所要時間 | コスト |")?;
     writeln!(md, "|---|---|---|---|---|---|---|")?;
     for s in sessions {
-        let prompt = truncate(s.first_prompt.as_deref().unwrap_or(""), 50);
+        let prompt = truncate(&s.list_prompt(), 50);
         let repo = s.repo.as_deref().unwrap_or("-");
         let cost = if s.cost.has_unknown {
             format!("${:.2}+?", s.cost.amount_usd)

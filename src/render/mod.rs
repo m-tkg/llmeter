@@ -14,13 +14,7 @@ pub fn print_sessions_table(sessions: &[Session]) {
         "初回プロンプト", "ツール", "リポジトリ", "ターン", "エラー率", "所要時間", "コスト"
     );
     for s in sessions {
-        let prompt = s
-            .first_prompt
-            .as_deref()
-            .unwrap_or("")
-            .chars()
-            .take(50)
-            .collect::<String>();
+        let prompt = s.list_prompt().chars().take(50).collect::<String>();
         let repo = s.repo.as_deref().unwrap_or("-");
         let duration = format_duration(s.duration_secs());
         let cost = if s.cost.has_unknown {

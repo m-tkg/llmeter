@@ -1,7 +1,10 @@
 use crate::daily::split_usage_by_duration;
+use crate::prompt_text::{
+    first_chronological_prompt_from_history, normalize_user_prompt,
+};
 use crate::model::{ModelUsage, Session, ToolCallStat, Tool, Transcript, TranscriptEvent, Usage};
 use anyhow::Result;
-use chrono::{DateTime, TimeZone, Utc};
+use chrono::{DateTime, FixedOffset, NaiveDateTime, TimeZone, Utc};
 use serde::Deserialize;
 use serde_json::Value;
 use std::collections::{BTreeMap, HashSet};
@@ -30,6 +33,7 @@ struct Meta {
     #[serde(rename = "updatedAtMs")]
     updated_at_ms: Option<i64>,
     cwd: Option<String>,
+    title: Option<String>,
 }
 
 impl crate::sources::Source for CursorSource {
@@ -49,7 +53,7 @@ impl crate::sources::Source for CursorSource {
         let session = if is_agent_transcript(path) {
             build_session_from_transcript(path)?
         } else {
-            build_session_from_store(path)?
+            build_session_from_store(&self.projects_root, path)?
         };
         match session {
             Some(s) => Ok(vec![s]),
@@ -61,7 +65,7 @@ impl crate::sources::Source for CursorSource {
         let session = if is_agent_transcript(path) {
             build_session_from_transcript(path)?
         } else {
-            build_session_from_store(path)?
+            build_session_from_store(&self.projects_root, path)?
         }
         .filter(|s| s.id == session_id)
         .ok_or_else(|| anyhow::anyhow!("セッションが見つからない: {session_id}"))?;
@@ -184,6 +188,187 @@ fn file_time_range(path: &Path) -> (DateTime<Utc>, DateTime<Utc>) {
     (created, modified)
 }
 
+fn min_max_datetime(times: &[DateTime<Utc>]) -> Option<(DateTime<Utc>, DateTime<Utc>)> {
+    let mut iter = times.iter().copied();
+    let first = iter.next()?;
+    let (min, max) = iter.fold((first, first), |(min, max), t| (min.min(t), max.max(t)));
+    Some((min, max))
+}
+
+fn parse_iso_timestamp(s: &str) -> Option<DateTime<Utc>> {
+    DateTime::parse_from_rfc3339(s)
+        .ok()
+        .map(|d| d.with_timezone(&Utc))
+        .or_else(|| s.parse::<DateTime<Utc>>().ok())
+}
+
+/// Cursor が user blob に注入する `<timestamp>Tuesday, Aug 4, 2026, 4:19 PM (UTC+9)</timestamp>` をパース。
+fn parse_cursor_injected_timestamp(s: &str) -> Option<DateTime<Utc>> {
+    let s = s.trim();
+    if let Some(dt) = parse_iso_timestamp(s) {
+        return Some(dt);
+    }
+    let tz_start = s.rfind("(UTC").or_else(|| s.rfind("(GMT"))?;
+    let tz_label = s[tz_start + 1..s.len() - 1].trim();
+    let date_part = strip_weekday_prefix(s[..tz_start].trim());
+    let offset = parse_utc_offset_label(tz_label)?;
+    let naive = NaiveDateTime::parse_from_str(date_part, "%b %d, %Y, %I:%M %p").ok()?;
+    offset
+        .from_local_datetime(&naive)
+        .single()
+        .map(|dt| dt.with_timezone(&Utc))
+}
+
+fn strip_weekday_prefix(s: &str) -> &str {
+    let mut parts = s.splitn(2, ',');
+    let first = parts.next().unwrap_or(s).trim();
+    let rest = parts.next();
+    if rest.is_some() && first.chars().all(|c| c.is_ascii_alphabetic()) && first.len() >= 3 {
+        rest.unwrap().trim()
+    } else {
+        s
+    }
+}
+
+fn parse_utc_offset_label(label: &str) -> Option<FixedOffset> {
+    let label = label.trim();
+    if label == "UTC" || label == "GMT" {
+        return FixedOffset::east_opt(0);
+    }
+    let rest = label
+        .strip_prefix("UTC")
+        .or_else(|| label.strip_prefix("GMT"))?
+        .trim();
+    if rest.is_empty() {
+        return FixedOffset::east_opt(0);
+    }
+    let sign = if rest.starts_with('+') {
+        1
+    } else if rest.starts_with('-') {
+        -1
+    } else {
+        return None;
+    };
+    let hours = rest[1..].parse::<i32>().ok()?;
+    FixedOffset::east_opt(sign * hours * 3600)
+}
+
+fn extract_timestamps_from_text(text: &str) -> Vec<DateTime<Utc>> {
+    const OPEN: &str = "<timestamp>";
+    const CLOSE: &str = "</timestamp>";
+    let mut out = Vec::new();
+    let mut rest = text;
+    while let Some(start) = rest.find(OPEN) {
+        let after = start + OPEN.len();
+        let close_rel = rest[after..].find(CLOSE).unwrap_or(rest.len() - after);
+        let inner = rest[after..after + close_rel].trim();
+        if let Some(dt) = parse_cursor_injected_timestamp(inner) {
+            out.push(dt);
+        }
+        rest = if after + close_rel + CLOSE.len() <= rest.len() {
+            &rest[after + close_rel + CLOSE.len()..]
+        } else {
+            break;
+        };
+    }
+    out
+}
+
+fn collect_times_from_transcript_jsonl(path: &Path) -> Vec<DateTime<Utc>> {
+    let mut times = Vec::new();
+    let Ok(raw) = std::fs::read_to_string(path) else {
+        return times;
+    };
+    for line in raw.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let Ok(v) = serde_json::from_str::<Value>(line) else { continue };
+        if let Some(ts) = v.get("timestamp").and_then(|t| t.as_str()) {
+            if let Some(dt) = parse_iso_timestamp(ts) {
+                times.push(dt);
+            }
+        }
+        let content = content_from_value(&v);
+        let text = extract_content_text(content);
+        times.extend(extract_timestamps_from_text(&text));
+    }
+    times
+}
+
+fn dir_time_range(dir: &Path) -> (DateTime<Utc>, DateTime<Utc>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        let now = Utc::now();
+        return (now, now);
+    };
+    let mut times = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_file() {
+            let (start, end) = file_time_range(&path);
+            times.push(start);
+            times.push(end);
+        }
+    }
+    min_max_datetime(&times).unwrap_or_else(|| {
+        let now = Utc::now();
+        (now, now)
+    })
+}
+
+fn session_time_range_from_store(
+    store_db_path: &Path,
+    meta: &Meta,
+    projects_root: &Path,
+    session_id: &str,
+) -> (DateTime<Utc>, DateTime<Utc>) {
+    let mut content_times = Vec::new();
+    let mut fallback_times = Vec::new();
+    if let Some(ms) = meta.created_at_ms {
+        content_times.push(ms_to_datetime(ms));
+    }
+    if let Some(ms) = meta.updated_at_ms {
+        content_times.push(ms_to_datetime(ms));
+    }
+    for msg in load_role_messages_from_store(store_db_path) {
+        content_times.extend(extract_timestamps_from_text(&msg.text));
+    }
+    if let Some(transcript_path) = find_agent_transcript_path(projects_root, session_id) {
+        content_times.extend(collect_times_from_transcript_jsonl(&transcript_path));
+        let (start, end) = file_time_range(&transcript_path);
+        fallback_times.push(start);
+        fallback_times.push(end);
+    }
+    let sess_dir = session_dir(store_db_path);
+    let (dir_start, dir_end) = dir_time_range(sess_dir);
+    fallback_times.push(dir_start);
+    fallback_times.push(dir_end);
+    let (db_start, db_end) = file_time_range(store_db_path);
+    fallback_times.push(db_start);
+    fallback_times.push(db_end);
+    let range = if !content_times.is_empty() {
+        min_max_datetime(&content_times)
+    } else {
+        min_max_datetime(&fallback_times)
+    };
+    range.unwrap_or_else(|| {
+        let now = Utc::now();
+        (now, now)
+    })
+}
+
+fn session_time_range_from_transcript(path: &Path, messages: &[RoleMessage]) -> (DateTime<Utc>, DateTime<Utc>) {
+    let mut content_times = collect_times_from_transcript_jsonl(path);
+    for msg in messages {
+        content_times.extend(extract_timestamps_from_text(&msg.text));
+    }
+    if let Some(range) = min_max_datetime(&content_times) {
+        return range;
+    }
+    file_time_range(path)
+}
+
 fn repo_from_cwd(cwd: &str) -> String {
     Path::new(cwd)
         .file_name()
@@ -210,11 +395,18 @@ fn load_meta(store_db_path: &Path) -> Meta {
         .unwrap_or_default()
 }
 
-fn load_first_prompt(store_db_path: &Path) -> Option<String> {
+fn load_first_prompt_from_history(store_db_path: &Path) -> Option<String> {
     let path = session_dir(store_db_path).join("prompt_history.json");
     let raw = std::fs::read_to_string(path).ok()?;
     let arr: Vec<String> = serde_json::from_str(&raw).ok()?;
-    arr.into_iter().next()
+    first_chronological_prompt_from_history(&arr)
+}
+
+fn first_prompt_from_store_messages(store_db_path: &Path) -> Option<String> {
+    load_role_messages_from_store(store_db_path)
+        .iter()
+        .filter(|m| m.role == "user")
+        .find_map(|m| normalize_user_prompt(&m.text))
 }
 
 struct RoleMessage {
@@ -287,7 +479,7 @@ fn load_role_messages_from_store(store_db_path: &Path) -> Vec<RoleMessage> {
     let Ok(conn) = rusqlite::Connection::open(store_db_path) else {
         return out;
     };
-    let Ok(mut stmt) = conn.prepare("SELECT data FROM blobs") else {
+    let Ok(mut stmt) = conn.prepare("SELECT data FROM blobs ORDER BY rowid") else {
         return out;
     };
     let Ok(rows) = stmt.query_map([], |row| row.get::<_, Vec<u8>>(0)) else {
@@ -397,8 +589,16 @@ fn session_from_messages(
         return None;
     }
 
-    let turns = messages.iter().filter(|m| m.role == "user").count() as u32;
-    let first_prompt = first_prompt.or_else(|| messages.iter().find(|m| m.role == "user").map(|m| m.text.clone()));
+    let turns = messages
+        .iter()
+        .filter(|m| m.role == "user" && normalize_user_prompt(&m.text).is_some())
+        .count() as u32;
+    let first_prompt = first_prompt.or_else(|| {
+        messages
+            .iter()
+            .filter(|m| m.role == "user")
+            .find_map(|m| normalize_user_prompt(&m.text))
+    });
 
     let total_chars: usize = messages.iter().map(|m| m.text.chars().count()).sum();
     let usage = Usage {
@@ -448,7 +648,37 @@ fn session_from_messages(
     })
 }
 
-fn build_session_from_store(path: &Path) -> Result<Option<Session>> {
+fn find_agent_transcript_path(projects_root: &Path, session_id: &str) -> Option<PathBuf> {
+    let mut stack = vec![projects_root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            if path.extension().is_some_and(|e| e == "jsonl")
+                && path.file_stem().is_some_and(|s| s == session_id)
+                && path.to_string_lossy().contains("/agent-transcripts/")
+            {
+                return Some(path);
+            }
+        }
+    }
+    None
+}
+
+fn first_prompt_from_agent_transcript(projects_root: &Path, session_id: &str) -> Option<String> {
+    let path = find_agent_transcript_path(projects_root, session_id)?;
+    let messages = load_role_messages_from_transcript(&path);
+    messages
+        .iter()
+        .filter(|m| m.role == "user")
+        .find_map(|m| normalize_user_prompt(&m.text))
+}
+
+fn build_session_from_store(projects_root: &Path, path: &Path) -> Result<Option<Session>> {
     if !path.is_file() {
         return Ok(None);
     }
@@ -458,13 +688,19 @@ fn build_session_from_store(path: &Path) -> Result<Option<Session>> {
         return Ok(None);
     }
 
-    let start = meta.created_at_ms.map(ms_to_datetime).unwrap_or_else(Utc::now);
-    let end = meta.updated_at_ms.map(ms_to_datetime).unwrap_or(start);
-    let first_prompt = load_first_prompt(path);
+    let session_id = session_id_from_path(path);
+    let (start, end) = session_time_range_from_store(path, &meta, projects_root, &session_id);
+    let first_prompt = first_prompt_from_store_messages(path)
+        .or_else(|| first_prompt_from_agent_transcript(projects_root, &session_id))
+        .or_else(|| load_first_prompt_from_history(path))
+        .or_else(|| {
+            meta.title
+                .filter(|t| crate::prompt_text::is_displayable_user_prompt(t))
+        });
     let tool_count = messages.iter().filter(|m| m.role == "tool").count() as u64;
 
     Ok(session_from_messages(
-        session_id_from_path(path),
+        session_id,
         path.to_string_lossy().to_string(),
         meta.cwd,
         start,
@@ -483,7 +719,7 @@ fn build_session_from_transcript(path: &Path) -> Result<Option<Session>> {
     if messages.is_empty() {
         return Ok(None);
     }
-    let (start, end) = file_time_range(path);
+    let (start, end) = session_time_range_from_transcript(path, &messages);
     let id = path
         .file_stem()
         .map(|s| s.to_string_lossy().to_string())
@@ -517,7 +753,11 @@ fn build_events(messages: &[RoleMessage], ts: DateTime<Utc>) -> Result<Vec<Trans
     events.push(TranscriptEvent::Marker { timestamp: ts, label: "セッション開始".into() });
     for m in messages {
         match m.role.as_str() {
-            "user" => events.push(TranscriptEvent::UserMessage { timestamp: ts, text: m.text.clone() }),
+            "user" => {
+                if let Some(text) = normalize_user_prompt(&m.text) {
+                    events.push(TranscriptEvent::UserMessage { timestamp: ts, text });
+                }
+            }
             "assistant" => events.push(TranscriptEvent::AssistantMessage {
                 timestamp: ts,
                 text: m.text.clone(),
@@ -593,6 +833,133 @@ mod tests {
     }
 
     #[test]
+    fn skips_injected_user_info_for_first_prompt() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sess_dir = tmp.path().join("chats").join("ws").join("sess-inject");
+        std::fs::create_dir_all(&sess_dir).unwrap();
+        std::fs::write(
+            sess_dir.join("meta.json"),
+            r#"{"schemaVersion":1,"createdAtMs":1784606311186,"cwd":"/Users/demo/app"}"#,
+        )
+        .unwrap();
+        let db_path = sess_dir.join("store.db");
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        conn.execute("CREATE TABLE blobs (id TEXT PRIMARY KEY, data BLOB)", []).unwrap();
+        conn.execute(
+            "INSERT INTO blobs (id, data) VALUES (?1, ?2)",
+            rusqlite::params![
+                "b1",
+                r#"{"role":"user","content":"<user_info>OS</user_info><rules>x</rules>"}"#.as_bytes()
+            ],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO blobs (id, data) VALUES (?1, ?2)",
+            rusqlite::params![
+                "b2",
+                r#"{"role":"user","content":[{"type":"text","text":"<user_query>本物の質問</user_query>"}]}"#
+                    .as_bytes()
+            ],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO blobs (id, data) VALUES (?1, ?2)",
+            rusqlite::params![
+                "b3",
+                r#"{"role":"assistant","content":[{"type":"text","text":"ok"}]}"#.as_bytes()
+            ],
+        )
+        .unwrap();
+        let source = CursorSource {
+            chats_root: tmp.path().join("chats"),
+            projects_root: tmp.path().join("projects"),
+        };
+        let sessions = source.parse_file(&db_path).unwrap();
+        assert_eq!(sessions[0].first_prompt.as_deref(), Some("本物の質問"));
+        assert_eq!(sessions[0].turns, 1);
+    }
+
+    #[test]
+    fn load_first_prompt_from_history_skips_slash_commands() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sess_dir = tmp.path().join("chats").join("ws").join("sess-slash");
+        std::fs::create_dir_all(&sess_dir).unwrap();
+        std::fs::write(
+            sess_dir.join("prompt_history.json"),
+            r#"["/clear", "実際の質問内容"]"#,
+        )
+        .unwrap();
+        let db_path = sess_dir.join("store.db");
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        conn.execute("CREATE TABLE blobs (id TEXT PRIMARY KEY, data BLOB)", []).unwrap();
+        assert_eq!(
+            load_first_prompt_from_history(&db_path).as_deref(),
+            Some("実際の質問内容")
+        );
+    }
+
+    #[test]
+    fn load_first_prompt_from_history_newest_first_like_da2dc193() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sess_dir = tmp.path().join("chats").join("ws").join("sess-long");
+        std::fs::create_dir_all(&sess_dir).unwrap();
+        std::fs::write(
+            sess_dir.join("prompt_history.json"),
+            r#"["直して", "一旦コミットして", "グラフについて7/1"]"#,
+        )
+        .unwrap();
+        let db_path = sess_dir.join("store.db");
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        conn.execute("CREATE TABLE blobs (id TEXT PRIMARY KEY, data BLOB)", []).unwrap();
+        assert_eq!(
+            load_first_prompt_from_history(&db_path).as_deref(),
+            Some("グラフについて7/1")
+        );
+    }
+
+    #[test]
+    fn normalizes_user_info_blob_to_user_query() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sess_dir = tmp.path().join("chats").join("ws").join("sess-uq");
+        std::fs::create_dir_all(&sess_dir).unwrap();
+        std::fs::write(
+            sess_dir.join("meta.json"),
+            r#"{"schemaVersion":1,"createdAtMs":1784606311186,"cwd":"/Users/demo/app"}"#,
+        )
+        .unwrap();
+        let db_path = sess_dir.join("store.db");
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        conn.execute("CREATE TABLE blobs (id TEXT PRIMARY KEY, data BLOB)", []).unwrap();
+        conn.execute(
+            "INSERT INTO blobs (id, data) VALUES (?1, ?2)",
+            rusqlite::params![
+                "b1",
+                r#"{"role":"user","content":"<user_info>OS</user_info><user_query>bucket を選ぶ画面がない</user_query>"}"#
+                    .as_bytes()
+            ],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO blobs (id, data) VALUES (?1, ?2)",
+            rusqlite::params![
+                "b2",
+                r#"{"role":"assistant","content":[{"type":"text","text":"ok"}]}"#.as_bytes()
+            ],
+        )
+        .unwrap();
+        let source = CursorSource {
+            chats_root: tmp.path().join("chats"),
+            projects_root: tmp.path().join("projects"),
+        };
+        let sessions = source.parse_file(&db_path).unwrap();
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(
+            sessions[0].first_prompt.as_deref(),
+            Some("bucket を選ぶ画面がない")
+        );
+    }
+
+    #[test]
     fn parses_session_summary_with_estimated_usage() {
         let tmp = tempfile::tempdir().unwrap();
         let path = write_store_fixture(tmp.path());
@@ -654,5 +1021,57 @@ mod tests {
         let transcript = source.parse_transcript(&path, &id).unwrap();
         assert!(transcript.events.iter().any(|e| matches!(e, TranscriptEvent::UserMessage { .. })));
         assert!(transcript.events.iter().any(|e| matches!(e, TranscriptEvent::AssistantMessage { .. })));
+    }
+
+    #[test]
+    fn parses_cursor_injected_timestamp_tag() {
+        let dt = parse_cursor_injected_timestamp("Tuesday, Aug 4, 2026, 4:19 PM (UTC+9)").unwrap();
+        assert_eq!(dt, Utc.with_ymd_and_hms(2026, 8, 4, 7, 19, 0).unwrap());
+    }
+
+    #[test]
+    fn session_without_meta_uses_blob_timestamps_for_duration() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sess_dir = tmp.path().join("chats").join("ws").join("sess-no-meta");
+        std::fs::create_dir_all(&sess_dir).unwrap();
+        let db_path = sess_dir.join("store.db");
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        conn.execute("CREATE TABLE blobs (id TEXT PRIMARY KEY, data BLOB)", []).unwrap();
+        conn.execute(
+            "INSERT INTO blobs (id, data) VALUES (?1, ?2)",
+            rusqlite::params![
+                "b1",
+                r#"{"role":"user","content":"<timestamp>Tuesday, Aug 4, 2026, 4:19 PM (UTC+9)</timestamp><user_query>hello</user_query>"}"#
+                    .as_bytes()
+            ],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO blobs (id, data) VALUES (?1, ?2)",
+            rusqlite::params![
+                "b2",
+                r#"{"role":"user","content":"<timestamp>Tuesday, Aug 4, 2026, 5:30 PM (UTC+9)</timestamp><user_query>follow up</user_query>"}"#
+                    .as_bytes()
+            ],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO blobs (id, data) VALUES (?1, ?2)",
+            rusqlite::params![
+                "b3",
+                r#"{"role":"assistant","content":[{"type":"text","text":"ok"}]}"#.as_bytes()
+            ],
+        )
+        .unwrap();
+        let source = CursorSource {
+            chats_root: tmp.path().join("chats"),
+            projects_root: tmp.path().join("projects"),
+        };
+        let sessions = source.parse_file(&db_path).unwrap();
+        assert_eq!(sessions.len(), 1);
+        let s = &sessions[0];
+        assert!(s.duration_secs() > 0);
+        assert_eq!(s.start, Utc.with_ymd_and_hms(2026, 8, 4, 7, 19, 0).unwrap());
+        assert_eq!(s.end, Utc.with_ymd_and_hms(2026, 8, 4, 8, 30, 0).unwrap());
     }
 }

@@ -523,7 +523,7 @@ pub fn write_index(
         "<table><thead><tr><th>初回プロンプト</th><th>ツール</th><th>リポジトリ</th><th class=\"num\">ターン</th><th class=\"num\">エラー率</th><th class=\"num\">所要時間</th><th class=\"num\">コスト</th></tr></thead><tbody>",
     );
     for s in sessions {
-        let prompt = truncate(s.first_prompt.as_deref().unwrap_or(""), 50);
+        let prompt = truncate(&s.list_prompt(), 50);
         let repo = s.repo.as_deref().unwrap_or("-");
         let cost = if s.cost.has_unknown {
             format!("${:.2}+?", s.cost.amount_usd)

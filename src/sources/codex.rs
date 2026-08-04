@@ -1,4 +1,5 @@
 use crate::daily::{add_model_usage, map_to_daily_models, usage_delta};
+use crate::prompt_text::normalize_user_prompt;
 use crate::model::{ModelUsage, Session, ToolCallStat, Tool, Transcript, TranscriptEvent, Usage};
 use anyhow::Result;
 use chrono::{DateTime, NaiveDate, Utc};
@@ -146,9 +147,11 @@ fn build_session(path: &Path) -> Result<Option<Session>> {
                     "user_message" => {
                         turns += 1;
                         if first_prompt.is_none()
-                            && let Some(text) = line.payload.get("message").and_then(|v| v.as_str()) {
-                                first_prompt = Some(text.to_string());
-                            }
+                            && let Some(text) = line.payload.get("message").and_then(|v| v.as_str())
+                            && let Some(p) = normalize_user_prompt(text)
+                        {
+                            first_prompt = Some(p);
+                        }
                     }
                     "token_count" => {
                         if let Some(info) = line.payload.get("info")

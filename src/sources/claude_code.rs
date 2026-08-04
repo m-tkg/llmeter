@@ -1,4 +1,5 @@
 use crate::daily::{add_model_usage, map_to_daily_models};
+use crate::prompt_text::normalize_user_prompt;
 use crate::model::{
     ModelUsage, Session, ToolCallStat, Tool, Transcript, TranscriptEvent, Usage,
 };
@@ -30,6 +31,12 @@ struct RawLine {
     is_sidechain: bool,
     #[serde(rename = "isMeta", default)]
     is_meta: bool,
+    #[serde(rename = "isCompactSummary", default)]
+    is_compact_summary: bool,
+    #[serde(rename = "aiTitle", default)]
+    ai_title: Option<String>,
+    #[serde(default)]
+    slug: Option<String>,
     timestamp: Option<String>,
     cwd: Option<String>,
     #[serde(rename = "sessionId")]
@@ -70,6 +77,9 @@ fn walk_jsonl(root: &Path) -> Vec<PathBuf> {
     for entry in entries.flatten() {
         let path = entry.path();
         if path.is_dir() {
+            if path.file_name().is_some_and(|n| n == "subagents") {
+                continue;
+            }
             out.extend(walk_jsonl(&path));
         } else if path.extension().is_some_and(|e| e == "jsonl") {
             out.push(path);
@@ -82,7 +92,7 @@ fn parse_timestamp(s: &str) -> Option<DateTime<Utc>> {
     DateTime::parse_from_rfc3339(s).ok().map(|d| d.with_timezone(&Utc))
 }
 
-/// meta/コマンド由来のテキストは first_prompt 候補から除外する。
+/// トランスクリプト表示用（一覧の初回プロンプト判定より緩い）。
 fn is_real_user_text(text: &str) -> bool {
     !text.trim_start().starts_with('<')
 }
@@ -103,6 +113,8 @@ fn build_session(path: &Path) -> Result<Option<Session>> {
     let mut end: Option<DateTime<Utc>> = None;
     let mut turns: u32 = 0;
     let mut first_prompt: Option<String> = None;
+    let mut ai_title: Option<String> = None;
+    let mut slug: Option<String> = None;
     let mut model_usage: HashMap<String, Usage> = HashMap::new();
     let mut daily_model_usage: BTreeMap<NaiveDate, HashMap<String, Usage>> = BTreeMap::new();
     let mut tool_calls: HashMap<String, ToolCallStat> = HashMap::new();
@@ -136,14 +148,25 @@ fn build_session(path: &Path) -> Result<Option<Session>> {
             end = Some(end.map_or(ts, |e: DateTime<Utc>| e.max(ts)));
         }
 
+        if raw.kind.as_deref() == Some("ai-title") && ai_title.is_none() {
+            ai_title = raw.ai_title.clone();
+        }
+        if raw.slug.is_some() {
+            slug = raw.slug.clone();
+        }
+
         match raw.kind.as_deref() {
             Some("user") => {
                 if let Some(msg) = &raw.message {
                     let content_val = msg.get("content");
                     match content_val {
                         Some(serde_json::Value::String(text)) => {
-                            if !raw.is_meta && first_prompt.is_none() && is_real_user_text(text) {
-                                first_prompt = Some(text.clone());
+                            if !raw.is_meta
+                                && !raw.is_compact_summary
+                                && first_prompt.is_none()
+                                && let Some(p) = normalize_user_prompt(text)
+                            {
+                                first_prompt = Some(p);
                             }
                             if !raw.is_meta {
                                 turns += 1;
@@ -234,6 +257,19 @@ fn build_session(path: &Path) -> Result<Option<Session>> {
     let Some(session_id) = session_id else { return Ok(None) };
     let Some(start) = start else { return Ok(None) };
     let end = end.unwrap_or(start);
+
+    if first_prompt.is_none() {
+        first_prompt = ai_title
+            .as_ref()
+            .map(|t| t.trim().to_string())
+            .filter(|t| !t.is_empty());
+    }
+    if first_prompt.is_none() {
+        first_prompt = slug
+            .as_ref()
+            .map(|t| t.trim().to_string())
+            .filter(|t| !t.is_empty());
+    }
 
     let mut usage = Usage::default();
     let models: Vec<ModelUsage> = model_usage
@@ -401,6 +437,21 @@ mod tests {
     }
 
     #[test]
+    fn skips_compact_summary_for_first_prompt() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("session.jsonl");
+        let lines = [
+            r#"{"type":"ai-title","aiTitle":"Namespace コスト試算","sessionId":"sess-3"}"#.to_string(),
+            r#"{"type":"user","message":{"role":"user","content":"This session is being continued from a previous conversation that ran out of context."},"isCompactSummary":true,"timestamp":"2026-07-06T08:02:59.219Z","sessionId":"sess-3","uuid":"u0"}"#.to_string(),
+            r#"{"type":"user","message":{"role":"user","content":"結論としてデイリー金額を出して"},"timestamp":"2026-07-06T08:01:54.088Z","sessionId":"sess-3","uuid":"u1"}"#.to_string(),
+        ];
+        std::fs::write(&path, lines.join("\n")).unwrap();
+        let source = ClaudeCodeSource::default();
+        let sessions = source.parse_file(&path).unwrap();
+        assert_eq!(sessions[0].first_prompt.as_deref(), Some("結論としてデイリー金額を出して"));
+    }
+
+    #[test]
     fn attributes_usage_to_message_date() {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("session.jsonl");
@@ -419,6 +470,36 @@ mod tests {
         let d2 = chrono::NaiveDate::from_ymd_opt(2026, 7, 2).unwrap();
         assert_eq!(s.daily_models.get(&d1).unwrap()[0].usage.input_tokens, 100);
         assert_eq!(s.daily_models.get(&d2).unwrap()[0].usage.input_tokens, 50);
+    }
+
+    #[test]
+    fn extracts_first_prompt_from_claude_command_xml() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("session.jsonl");
+        let lines = [
+            r#"{"type":"user","message":{"role":"user","content":"<command-name>/clear</command-name>\n<command-message>zsh起動の遅延原因を調査</command-message>"},"timestamp":"2026-07-10T00:08:03.920Z","cwd":"/Users/masaki/work/claude","sessionId":"sess-cmd","uuid":"u1"}"#.to_string(),
+            r#"{"type":"assistant","message":{"model":"claude-sonnet-5","content":[{"type":"text","text":"ok"}],"usage":{"input_tokens":10,"output_tokens":5,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}},"timestamp":"2026-07-10T00:08:04.000Z","sessionId":"sess-cmd","uuid":"a1"}"#.to_string(),
+        ];
+        std::fs::write(&path, lines.join("\n")).unwrap();
+        let source = ClaudeCodeSource::default();
+        let sessions = source.parse_file(&path).unwrap();
+        assert_eq!(
+            sessions[0].first_prompt.as_deref(),
+            Some("zsh起動の遅延原因を調査")
+        );
+    }
+
+    #[test]
+    fn slash_only_session_uses_command_label() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("session.jsonl");
+        let lines = [
+            r#"{"type":"user","message":{"role":"user","content":"/morning"},"timestamp":"2026-07-10T00:08:03.920Z","cwd":"/Users/masaki/work/claude","sessionId":"sess-slash","slug":"snappy-yawning-cookie","uuid":"u1"}"#.to_string(),
+        ];
+        std::fs::write(&path, lines.join("\n")).unwrap();
+        let source = ClaudeCodeSource::default();
+        let sessions = source.parse_file(&path).unwrap();
+        assert_eq!(sessions[0].first_prompt.as_deref(), Some("/morning"));
     }
 
     #[test]

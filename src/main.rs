@@ -7,6 +7,7 @@ mod insights;
 mod litellm;
 mod model;
 mod pricing;
+mod prompt_text;
 mod render;
 mod sources;
 
@@ -235,6 +236,17 @@ fn collect_sessions(
     Ok(aggregate::filter_range(result, since, until))
 }
 
+fn prepare_sessions(
+    since: Option<chrono::DateTime<Utc>>,
+    until: Option<chrono::DateTime<Utc>>,
+    tools: &[Tool],
+    pricing: &pricing::PricingTable,
+) -> Result<Vec<Session>> {
+    let mut sessions = collect_sessions(since, until, tools)?;
+    apply_cost(&mut sessions, pricing);
+    Ok(aggregate::filter_meaningful_sessions(sessions))
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
@@ -266,8 +278,7 @@ fn main() -> Result<()> {
             let tools = parse_tools(&opts.tools);
             let pricing = pricing::PricingTable::load(None, opts.offline);
             let (since_dt, until_dt) = resolve_date_range(opts.days, opts.since, opts.until);
-            let mut sessions = collect_sessions(since_dt, until_dt, &tools)?;
-            apply_cost(&mut sessions, &pricing);
+            let sessions = prepare_sessions(since_dt, until_dt, &tools, &pricing)?;
 
             let overview = aggregate::build_overview(&sessions);
             let insight_lines = insights::generate(&sessions, Utc::now());
@@ -321,8 +332,7 @@ fn main() -> Result<()> {
             let tools = parse_tools(&tools);
             let pricing = pricing::PricingTable::load(None, offline);
             let (since_dt, until_dt) = resolve_date_range(days, None, None);
-            let mut sessions = collect_sessions(since_dt, until_dt, &tools)?;
-            apply_cost(&mut sessions, &pricing);
+            let mut sessions = prepare_sessions(since_dt, until_dt, &tools, &pricing)?;
 
             if let Some(repo) = &repo {
                 sessions.retain(|s| s.repo.as_deref() == Some(repo.as_str()));
