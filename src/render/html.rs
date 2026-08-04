@@ -30,11 +30,13 @@ body {
   color: var(--ink);
   font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
 }
-.page { max-width: 1080px; margin: 0 auto; padding: 32px; }
+.page { max-width: 1080px; margin: 0 auto; padding: 32px; overflow-x: hidden; }
+@media (max-width: 640px) { .page { padding: 16px; } }
 .header-row { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 16px; }
 .brand { font-size: 16px; font-weight: 600; }
 .period { font-size: 13px; color: var(--muted); }
-.card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 20px 24px; margin-bottom: 16px; }
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 20px 24px; margin-bottom: 16px; max-width: 100%; }
+@media (max-width: 640px) { .card { padding: 16px; } }
 .stat-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-bottom: 16px; }
 @media (max-width: 640px) { .stat-grid { grid-template-columns: repeat(2, 1fr); } }
 .stat-card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 20px 24px; }
@@ -62,20 +64,95 @@ body {
 .breakdown-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
 @media (max-width: 640px) { .breakdown-grid { grid-template-columns: 1fr; } }
 .breakdown-label { font-size: 13px; font-weight: 600; color: var(--ink-2); margin: 0 0 8px; }
-.mini-stats { display: flex; gap: 24px; margin-bottom: 16px; font-size: 13px; color: var(--ink-2); }
+.mini-stats { display: flex; flex-wrap: wrap; gap: 12px 24px; margin-bottom: 16px; font-size: 13px; color: var(--ink-2); }
 .mini-stats b { color: var(--ink); font-variant-numeric: tabular-nums; font-weight: 650; }
+.table-scroll {
+  overflow-x: auto;
+  width: 100%;
+  min-width: 0;
+  -webkit-overflow-scrolling: touch;
+}
 table { width: 100%; border-collapse: collapse; }
+#session-table {
+  width: 100%;
+  min-width: 56rem;
+  table-layout: fixed;
+}
+#session-table col.col-prompt { width: 26%; }
+#session-table col.col-start { width: 12%; }
+#session-table col.col-tool { width: 10%; }
+#session-table col.col-repo { width: 15%; }
+#session-table col.col-turns { width: 6%; }
+#session-table col.col-errors { width: 8%; }
+#session-table col.col-duration { width: 9%; }
+#session-table col.col-cost { width: 14%; }
+#session-table th,
+#session-table td {
+  padding: 8px 10px;
+  vertical-align: middle;
+}
+#session-table td {
+  overflow: hidden;
+}
+#session-table th { white-space: nowrap; }
+#session-table .prompt-head,
+#session-table .prompt-cell {
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+#session-table .prompt-cell a {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+#session-table .repo-head,
+#session-table .repo-cell {
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+#session-table .start-head,
+#session-table .start-cell,
+#session-table .tool-head,
+#session-table .tool-cell,
+#session-table .turns-head,
+#session-table .turns-cell,
+#session-table .errors-head,
+#session-table .errors-cell,
+#session-table .duration-head,
+#session-table .duration-cell,
+#session-table .cost-head,
+#session-table .cost-cell {
+  white-space: nowrap;
+}
+#session-table .cost-head,
+#session-table .cost-cell {
+  min-width: 4.75rem;
+}
 th { text-align: left; font-size: 11px; color: var(--muted); font-weight: 600; padding: 8px 10px; border-bottom: 1px solid var(--border); }
-th.sortable { cursor: pointer; user-select: none; }
+th.sortable { cursor: pointer; user-select: none; white-space: nowrap; }
 th.sortable:hover { color: var(--ink-2); }
-th.sort-asc::after { content: " ▲"; font-size: 10px; }
-th.sort-desc::after { content: " ▼"; font-size: 10px; }
+th.sortable .th-label { vertical-align: middle; }
+th.sortable .sort-mark {
+  display: inline-block;
+  min-width: 0.7rem;
+  margin-left: 0.15rem;
+  text-align: center;
+  vertical-align: middle;
+  font-size: 10px;
+  line-height: 1;
+  color: var(--ink-2);
+}
+th.num.sortable .sort-mark { margin-left: 0.1rem; }
+th.sort-asc .sort-mark::before { content: "▲"; }
+th.sort-desc .sort-mark::before { content: "▼"; }
 th.num { text-align: right; }
+th.num.sortable { text-align: right; }
 td { padding: 10px; border-bottom: 1px solid var(--grid); font-size: 13.5px; color: var(--ink-2); }
 tbody tr:hover td { background: rgba(255,255,255,0.03); }
 td.num { text-align: right; font-variant-numeric: tabular-nums; }
 td.cost { font-weight: 600; color: var(--ink); }
-.tool-cell { white-space: nowrap; }
+#session-table .tool-cell { white-space: nowrap; }
 a { color: var(--accent); text-decoration: none; }
 a:hover { text-decoration: underline; }
 .error-dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--bad); margin-left: 4px; }
@@ -177,6 +254,12 @@ pub(crate) fn html_escape(s: &str) -> String {
 
 fn html_attr_escape(s: &str) -> String {
     html_escape(s).replace('\'', "&#39;")
+}
+
+fn sortable_th(classes: &str, sort_key: &str, label: &str) -> String {
+    format!(
+        "<th class=\"sortable {classes}\" data-sort=\"{sort_key}\"><span class=\"th-label\">{label}</span><span class=\"sort-mark\" aria-hidden=\"true\"></span></th>"
+    )
 }
 
 fn truncate(s: &str, n: usize) -> String {
@@ -450,9 +533,10 @@ fn render_tool_bar_chart(by_tool: &[ToolStat]) -> String {
 }
 
 fn render_model_bar_list(by_model: &[ModelStat]) -> String {
-    let max = by_model.iter().map(|m| m.cost).fold(0.0_f64, f64::max);
+    let visible = super::visible_model_stats(by_model);
+    let max = visible.iter().map(|m| m.cost).fold(0.0_f64, f64::max);
     let mut s = String::from("<div class=\"bar-list\">");
-    for m in by_model.iter().take(10) {
+    for m in visible.iter().take(10) {
         let pct = if max > 0.0 { (m.cost / max * 100.0).max(2.0) } else { 0.0 };
         let unknown = if m.has_unknown {
             " <span style=\"color:var(--muted)\">(単価未知)</span>"
@@ -466,9 +550,9 @@ fn render_model_bar_list(by_model: &[ModelStat]) -> String {
             m.cost
         );
     }
-    if by_model.len() > 10 {
-        let rest_cost: f64 = by_model[10..].iter().map(|m| m.cost).sum();
-        let rest_n = by_model.len() - 10;
+    if visible.len() > 10 {
+        let rest_cost: f64 = visible[10..].iter().map(|m| m.cost).sum();
+        let rest_n = visible.len() - 10;
         let _ = write!(
             s,
             "<div class=\"row\"><span class=\"name\" style=\"color:var(--muted)\">他 {rest_n} 件</span><span class=\"val\" style=\"color:var(--muted)\">${rest_cost:.2}</span></div>"
@@ -576,23 +660,26 @@ pub fn write_index(
 
     let _ = write!(
         body,
-        "<div class=\"card\"><h2 class=\"section-title\">セッション一覧</h2><div class=\"mini-stats\"><span>ターン数中央値 <b>{:.1}</b></span><span>平均エラー率 <b>{:.1}%</b></span><span>セッション数 <b>{}</b></span></div>",
+        "<div class=\"card session-card\"><h2 class=\"section-title\">セッション一覧</h2><div class=\"mini-stats\"><span>ターン数中央値 <b>{:.1}</b></span><span>平均エラー率 <b>{:.1}%</b></span><span>セッション数 <b>{}</b></span></div>",
         overview.median_turns,
         overview.mean_tool_error_rate * 100.0,
         overview.session_count
     );
     body.push_str(
-        "<table id=\"session-table\"><thead><tr>\
-<th class=\"sortable\" data-sort=\"prompt\">初回プロンプト</th>\
-<th class=\"sortable num\" data-sort=\"start\">開始 (UTC)</th>\
-<th class=\"sortable\" data-sort=\"tool\">ツール</th>\
-<th class=\"sortable\" data-sort=\"repo\">リポジトリ</th>\
-<th class=\"sortable num\" data-sort=\"turns\">ターン</th>\
-<th class=\"sortable num\" data-sort=\"errors\">エラー率</th>\
-<th class=\"sortable num\" data-sort=\"duration\">所要時間</th>\
-<th class=\"sortable num\" data-sort=\"cost\">コスト</th>\
-</tr></thead><tbody>",
+        "<div class=\"table-scroll\"><table id=\"session-table\"><colgroup>\
+<col class=\"col-prompt\"><col class=\"col-start\"><col class=\"col-tool\"><col class=\"col-repo\">\
+<col class=\"col-turns\"><col class=\"col-errors\"><col class=\"col-duration\"><col class=\"col-cost\">\
+</colgroup><thead><tr>",
     );
+    body.push_str(&sortable_th("prompt-head", "prompt", "初回プロンプト"));
+    body.push_str(&sortable_th("num start-head", "start", "開始 (JST)"));
+    body.push_str(&sortable_th("tool-head", "tool", "ツール"));
+    body.push_str(&sortable_th("repo-head", "repo", "リポジトリ"));
+    body.push_str(&sortable_th("num turns-head", "turns", "ターン"));
+    body.push_str(&sortable_th("num errors-head", "errors", "エラー率"));
+    body.push_str(&sortable_th("num duration-head", "duration", "所要時間"));
+    body.push_str(&sortable_th("num cost-head", "cost", "コスト"));
+    body.push_str("</tr></thead><tbody>");
     for s in sessions {
         let prompt = truncate(&s.list_prompt(), 50);
         let start = super::format_session_start(s.start);
@@ -613,14 +700,14 @@ pub fn write_index(
         let _ = write!(
             body,
             "<tr data-prompt=\"{}\" data-start=\"{}\" data-tool=\"{}\" data-repo=\"{}\" data-turns=\"{}\" data-errors=\"{}\" data-duration=\"{}\" data-cost=\"{}\">\
-<td><a href=\"sessions/{}.html\">{}</a></td>\
-<td class=\"num\">{}</td>\
+<td class=\"prompt-cell\"><a href=\"sessions/{}.html\">{}</a></td>\
+<td class=\"num start-cell\">{}</td>\
 <td class=\"tool-cell\"><span class=\"swatch\" style=\"background:{}\"></span>{}</td>\
-<td>{}</td>\
-<td class=\"num\">{}</td>\
-<td class=\"num\">{}</td>\
-<td class=\"num\">{}</td>\
-<td class=\"num cost\">{}</td></tr>",
+<td class=\"repo-cell\">{}</td>\
+<td class=\"num turns-cell\">{}</td>\
+<td class=\"num errors-cell\">{}</td>\
+<td class=\"num duration-cell\">{}</td>\
+<td class=\"num cost cost-cell\">{}</td></tr>",
             html_attr_escape(&s.list_prompt()),
             s.start.timestamp_millis(),
             html_attr_escape(s.tool.as_str()),
@@ -641,7 +728,7 @@ pub fn write_index(
             html_escape(&cost)
         );
     }
-    body.push_str("</tbody></table></div>");
+    body.push_str("</tbody></table></div></div>");
     body.push_str("<div id=\"chart-tooltip\" class=\"tooltip\"></div>");
 
     let html = page("llmeter レポート", &body, true);
@@ -681,12 +768,12 @@ fn render_session_html(t: &Transcript) -> String {
         render_stat_card("所要時間", &super::format_duration(s.duration_secs()), ""),
     );
 
-    let models: Vec<&str> = s.models.iter().map(|m| m.model.as_str()).collect();
+    let models = super::format_display_models(&s.models);
     let _ = write!(
         body,
         "<div class=\"meta-sub\">リポジトリ: {} · モデル: {} · 期間: {} 〜 {}</div>",
         html_escape(s.repo.as_deref().unwrap_or("-")),
-        html_escape(&models.join(", ")),
+        html_escape(&models),
         s.start,
         s.end
     );

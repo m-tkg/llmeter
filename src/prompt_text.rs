@@ -47,6 +47,29 @@ fn extract_tag_inner(text: &str, open: &str, close: &str) -> Option<String> {
     }
 }
 
+/// Cursor store の user blob 内 `Workspace Path:` を取り出す。
+pub fn extract_cursor_workspace_path(text: &str) -> Option<String> {
+    const KEY: &str = "Workspace Path:";
+    if let Some(idx) = text.find(KEY) {
+        let rest = text[idx + KEY.len()..].trim_start();
+        let path = rest
+            .split(|c: char| c == '\n' || c == '<')
+            .next()
+            .unwrap_or(rest)
+            .trim();
+        if !path.is_empty() {
+            return Some(path.to_string());
+        }
+    }
+    None
+}
+
+/// Cursor subagent へ渡す親エージェントの委譲プロンプトっぽい文言。
+pub fn is_subagent_delegation_prompt(text: &str) -> bool {
+    let t = text.trim();
+    t.starts_with("Repository:") && t.contains("Read-only investigation")
+}
+
 /// Cursor store の user blob 内 `<user_query>` を取り出す。
 pub fn extract_cursor_user_query(text: &str) -> Option<String> {
     extract_tag_inner(text, "<user_query>", "</user_query>")
@@ -203,11 +226,18 @@ mod tests {
     }
 
     #[test]
-    fn first_displayable_skips_bad_entries() {
-        let prompts = vec!["/clear".to_string(), "本当の初回プロンプト".to_string()];
+    fn extracts_workspace_path_inline_in_user_info() {
+        let blob = "<user_info>Workspace Path: /Users/demo/karte-io-systems-ops</user_info>";
         assert_eq!(
-            first_displayable_prompt(prompts).as_deref(),
-            Some("本当の初回プロンプト")
+            extract_cursor_workspace_path(blob).as_deref(),
+            Some("/Users/demo/karte-io-systems-ops")
         );
+    }
+
+    #[test]
+    fn detects_subagent_delegation_prompt() {
+        assert!(is_subagent_delegation_prompt(
+            "Repository: /Users/demo/repo. Read-only investigation. Determine exact manifests"
+        ));
     }
 }

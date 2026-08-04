@@ -52,7 +52,7 @@ pub fn build_index_markdown(
     writeln!(md)?;
 
     writeln!(md, "### モデル別\n")?;
-    for m in &overview.by_model {
+    for m in super::visible_model_stats(&overview.by_model) {
         let unknown = if m.has_unknown { " (未知単価あり)" } else { "" };
         writeln!(md, "- {}: ${:.2}, {} tokens{}", m.model, m.cost, m.tokens, unknown)?;
     }
@@ -72,7 +72,7 @@ pub fn build_index_markdown(
     writeln!(md, "## セッション一覧\n")?;
     writeln!(
         md,
-        "| 初回プロンプト | 開始 (UTC) | ツール | リポジトリ | ターン | エラー率 | 所要時間 | コスト |"
+        "| 初回プロンプト | 開始 (JST) | ツール | リポジトリ | ターン | エラー率 | 所要時間 | コスト |"
     )?;
     writeln!(md, "|---|---|---|---|---|---|---|---|")?;
     for s in sessions {
@@ -134,7 +134,7 @@ fn render_session_markdown(t: &Transcript) -> String {
     let _ = writeln!(
         md,
         "- モデル: {}",
-        s.models.iter().map(|m| m.model.as_str()).collect::<Vec<_>>().join(", ")
+        super::format_display_models(&s.models)
     );
     let _ = writeln!(md, "- 期間: {} 〜 {}", s.start, s.end);
     let cost = if s.cost.has_unknown {
@@ -152,8 +152,11 @@ fn render_session_markdown(t: &Transcript) -> String {
                 let _ = writeln!(md, "**User** ({timestamp}):\n\n{text}\n");
             }
             TranscriptEvent::AssistantMessage { timestamp, text, model } => {
-                let model_label = model.as_deref().unwrap_or("");
-                let _ = writeln!(md, "**Assistant** [{model_label}] ({timestamp}):\n\n{text}\n");
+                if let Some(model_label) = super::format_assistant_model_label(model.as_deref()) {
+                    let _ = writeln!(md, "**Assistant** [{model_label}] ({timestamp}):\n\n{text}\n");
+                } else {
+                    let _ = writeln!(md, "**Assistant** ({timestamp}):\n\n{text}\n");
+                }
             }
             TranscriptEvent::ToolUse { timestamp, name, summary, is_error } => {
                 let mark = if *is_error { "✗" } else { "▶" };

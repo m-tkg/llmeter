@@ -34,6 +34,8 @@ struct Meta {
     updated_at_ms: Option<i64>,
     cwd: Option<String>,
     title: Option<String>,
+    #[serde(rename = "isSubagent", default)]
+    is_subagent: bool,
 }
 
 impl crate::sources::Source for CursorSource {
@@ -53,7 +55,7 @@ impl crate::sources::Source for CursorSource {
         let session = if is_agent_transcript(path) {
             build_session_from_transcript(path)?
         } else {
-            build_session_from_store(&self.projects_root, path)?
+            build_session_from_store(&self.chats_root, &self.projects_root, path)?
         };
         match session {
             Some(s) => Ok(vec![s]),
@@ -65,7 +67,7 @@ impl crate::sources::Source for CursorSource {
         let session = if is_agent_transcript(path) {
             build_session_from_transcript(path)?
         } else {
-            build_session_from_store(&self.projects_root, path)?
+            build_session_from_store(&self.chats_root, &self.projects_root, path)?
         }
         .filter(|s| s.id == session_id)
         .ok_or_else(|| anyhow::anyhow!("セッションが見つからない: {session_id}"))?;
@@ -571,8 +573,12 @@ fn workspace_path_from_project_dir(project_dir: &Path) -> Option<String> {
     None
 }
 
-fn cwd_from_transcript(path: &Path) -> Option<String> {
+fn cwd_from_transcript_file(path: &Path) -> Option<String> {
     project_dir_from_transcript(path).and_then(|dir| workspace_path_from_project_dir(&dir))
+}
+
+fn cwd_from_session_transcript(projects_root: &Path, session_id: &str) -> Option<String> {
+    find_agent_transcript_path(projects_root, session_id).and_then(|path| cwd_from_transcript_file(&path))
 }
 
 fn session_from_messages(
@@ -669,6 +675,118 @@ fn find_agent_transcript_path(projects_root: &Path, session_id: &str) -> Option<
     None
 }
 
+fn workspace_from_messages(messages: &[RoleMessage]) -> Option<String> {
+    messages
+        .iter()
+        .filter(|m| m.role == "user")
+        .find_map(|m| crate::prompt_text::extract_cursor_workspace_path(&m.text))
+}
+
+fn resolve_session_cwd(
+    meta: &Meta,
+    messages: &[RoleMessage],
+    projects_root: &Path,
+    session_id: &str,
+) -> Option<String> {
+    meta.cwd
+        .clone()
+        .or_else(|| workspace_from_messages(messages))
+        .or_else(|| cwd_from_session_transcript(projects_root, session_id))
+}
+
+/// subagent 直前の親チャットから人間の初回プロンプトを探す。
+fn parent_human_prompt(chats_root: &Path, workspace: &str, before_ms: i64) -> Option<String> {
+    const WINDOW_MS: i64 = 2 * 3600 * 1000;
+    let mut best: Option<(i64, String)> = None;
+    let Ok(workspaces) = std::fs::read_dir(chats_root) else {
+        return None;
+    };
+    for ws in workspaces.flatten() {
+        let Ok(sessions) = std::fs::read_dir(ws.path()) else { continue };
+        for sess in sessions.flatten() {
+            let store = sess.path().join("store.db");
+            if !store.is_file() {
+                continue;
+            }
+            let meta = load_meta(&store);
+            if meta.is_subagent {
+                continue;
+            }
+            let msgs = load_role_messages_from_store(&store);
+            let workspace_from_msgs = workspace_from_messages(&msgs);
+            let session_workspace = meta.cwd.as_deref().or(workspace_from_msgs.as_deref());
+            if session_workspace != Some(workspace) {
+                continue;
+            }
+            let Some(created) = meta.created_at_ms else { continue };
+            if created >= before_ms || before_ms - created > WINDOW_MS {
+                continue;
+            }
+            let prompt = load_first_prompt_from_history(&store)
+                .or_else(|| first_prompt_from_store_messages(&store))
+                .or_else(|| {
+                    meta.title
+                        .filter(|t| crate::prompt_text::is_displayable_user_prompt(t))
+                });
+            if let Some(p) = prompt {
+                if best.as_ref().is_none_or(|(t, _)| created > *t) {
+                    best = Some((created, p));
+                }
+            }
+        }
+    }
+    best.map(|(_, p)| p)
+}
+
+fn resolve_first_prompt_for_store(
+    chats_root: &Path,
+    projects_root: &Path,
+    store_path: &Path,
+    meta: &Meta,
+    session_id: &str,
+) -> Option<String> {
+    let messages = load_role_messages_from_store(store_path);
+    let cwd = resolve_session_cwd(meta, &messages, projects_root, session_id);
+    if meta.is_subagent {
+        if let (Some(workspace), Some(before_ms)) = (cwd.as_deref(), meta.created_at_ms) {
+            if let Some(prompt) = parent_human_prompt(chats_root, workspace, before_ms) {
+                return Some(prompt);
+            }
+        }
+    }
+
+    let from_store = first_prompt_from_store_messages(store_path);
+    let from_transcript = first_prompt_from_agent_transcript(projects_root, session_id);
+    let candidate = from_store.or(from_transcript);
+
+    if meta.is_subagent {
+        if let Some(p) = candidate
+            .as_ref()
+            .filter(|p| crate::prompt_text::is_subagent_delegation_prompt(p))
+        {
+            return Some(format!("[subagent] {}", truncate_delegation_label(p)));
+        }
+    }
+
+    candidate
+        .or_else(|| load_first_prompt_from_history(store_path))
+        .or_else(|| {
+            meta.title
+                .as_ref()
+                .filter(|t| crate::prompt_text::is_displayable_user_prompt(t))
+                .cloned()
+        })
+}
+
+fn truncate_delegation_label(text: &str) -> String {
+    let line = text.lines().next().unwrap_or(text).trim();
+    if line.len() > 80 {
+        format!("{}…", line.chars().take(80).collect::<String>())
+    } else {
+        line.to_string()
+    }
+}
+
 fn first_prompt_from_agent_transcript(projects_root: &Path, session_id: &str) -> Option<String> {
     let path = find_agent_transcript_path(projects_root, session_id)?;
     let messages = load_role_messages_from_transcript(&path);
@@ -678,7 +796,7 @@ fn first_prompt_from_agent_transcript(projects_root: &Path, session_id: &str) ->
         .find_map(|m| normalize_user_prompt(&m.text))
 }
 
-fn build_session_from_store(projects_root: &Path, path: &Path) -> Result<Option<Session>> {
+fn build_session_from_store(chats_root: &Path, projects_root: &Path, path: &Path) -> Result<Option<Session>> {
     if !path.is_file() {
         return Ok(None);
     }
@@ -690,19 +808,14 @@ fn build_session_from_store(projects_root: &Path, path: &Path) -> Result<Option<
 
     let session_id = session_id_from_path(path);
     let (start, end) = session_time_range_from_store(path, &meta, projects_root, &session_id);
-    let first_prompt = first_prompt_from_store_messages(path)
-        .or_else(|| first_prompt_from_agent_transcript(projects_root, &session_id))
-        .or_else(|| load_first_prompt_from_history(path))
-        .or_else(|| {
-            meta.title
-                .filter(|t| crate::prompt_text::is_displayable_user_prompt(t))
-        });
+    let cwd = resolve_session_cwd(&meta, &messages, projects_root, &session_id);
+    let first_prompt = resolve_first_prompt_for_store(chats_root, projects_root, path, &meta, &session_id);
     let tool_count = messages.iter().filter(|m| m.role == "tool").count() as u64;
 
     Ok(session_from_messages(
         session_id,
         path.to_string_lossy().to_string(),
-        meta.cwd,
+        cwd,
         start,
         end,
         messages,
@@ -728,7 +841,7 @@ fn build_session_from_transcript(path: &Path) -> Result<Option<Session>> {
     Ok(session_from_messages(
         id,
         path.to_string_lossy().to_string(),
-        cwd_from_transcript(path),
+        cwd_from_transcript_file(path),
         start,
         end,
         messages,
@@ -1027,6 +1140,80 @@ mod tests {
     fn parses_cursor_injected_timestamp_tag() {
         let dt = parse_cursor_injected_timestamp("Tuesday, Aug 4, 2026, 4:19 PM (UTC+9)").unwrap();
         assert_eq!(dt, Utc.with_ymd_and_hms(2026, 8, 4, 7, 19, 0).unwrap());
+    }
+
+    #[test]
+    fn subagent_session_uses_parent_prompt_and_workspace_from_user_info() {
+        let tmp = tempfile::tempdir().unwrap();
+        let workspace = "/Users/demo/karte-io-systems-ops";
+        let parent_dir = tmp.path().join("chats").join("ws").join("parent-sess");
+        let sub_dir = tmp.path().join("chats").join("ws").join("sub-sess");
+        std::fs::create_dir_all(&parent_dir).unwrap();
+        std::fs::create_dir_all(&sub_dir).unwrap();
+
+        std::fs::write(
+            parent_dir.join("meta.json"),
+            format!(
+                r#"{{"schemaVersion":1,"createdAtMs":1000,"cwd":"{workspace}","title":"Cost Reduction Plan"}}"#
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            parent_dir.join("prompt_history.json"),
+            r#"["/clear", "fin-ops issue のコスト削減プランを作って"]"#,
+        )
+        .unwrap();
+        let parent_db = parent_dir.join("store.db");
+        let conn = rusqlite::Connection::open(&parent_db).unwrap();
+        conn.execute("CREATE TABLE blobs (id TEXT PRIMARY KEY, data BLOB)", []).unwrap();
+        conn.execute(
+            "INSERT INTO blobs (id, data) VALUES (?1, ?2)",
+            rusqlite::params![
+                "p1",
+                r#"{"role":"user","content":"fin-ops issue のコスト削減プランを作って"}"#.as_bytes()
+            ],
+        )
+        .unwrap();
+
+        std::fs::write(
+            sub_dir.join("meta.json"),
+            r#"{"schemaVersion":1,"createdAtMs":2000,"isSubagent":true}"#,
+        )
+        .unwrap();
+        let sub_db = sub_dir.join("store.db");
+        let conn = rusqlite::Connection::open(&sub_db).unwrap();
+        conn.execute("CREATE TABLE blobs (id TEXT PRIMARY KEY, data BLOB)", []).unwrap();
+        let user_blob = format!(
+            "<user_info>Workspace Path: {workspace}</user_info><user_query>Repository: {workspace}. Read-only investigation.</user_query>"
+        );
+        let user_json = serde_json::json!({"role": "user", "content": user_blob}).to_string();
+        conn.execute(
+            "INSERT INTO blobs (id, data) VALUES (?1, ?2)",
+            rusqlite::params!["s1", user_json.as_bytes()],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO blobs (id, data) VALUES (?1, ?2)",
+            rusqlite::params![
+                "s2",
+                r#"{"role":"assistant","content":[{"type":"text","text":"調査します"}]}"#.as_bytes()
+            ],
+        )
+        .unwrap();
+
+        let source = CursorSource {
+            chats_root: tmp.path().join("chats"),
+            projects_root: tmp.path().join("projects"),
+        };
+        let sessions = source.parse_file(&sub_db).unwrap();
+        assert_eq!(sessions.len(), 1);
+        let s = &sessions[0];
+        assert_eq!(s.cwd.as_deref(), Some(workspace));
+        assert_eq!(s.repo.as_deref(), Some("karte-io-systems-ops"));
+        assert_eq!(
+            s.first_prompt.as_deref(),
+            Some("fin-ops issue のコスト削減プランを作って")
+        );
     }
 
     #[test]
